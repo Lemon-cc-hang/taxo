@@ -29,19 +29,40 @@ class Classifier:
         matched, unmatched = self._rule_engine.classify(files)
         results = self._build_rule_results(matched)
 
+        # 对规则匹配的文件进一步细分（文档类按启发式/LLM细分）
+        refined = self._refine_rule_results(results)
+        results = refined
+
         if unmatched:
-            results.extend(self._classify_with_llm(unmatched))
+            if self._llm_client:
+                results.extend(self._classify_with_llm(unmatched))
+            else:
+                results.extend(self._classify_by_heuristics(unmatched))
 
         return results
+
+    def _refine_rule_results(self, results: list[ClassifyResult]) -> list[ClassifyResult]:
+        needs_refine = {"文档"}
+        to_refine = [r for r in results if r.category in needs_refine]
+        keep = [r for r in results if r.category not in needs_refine]
+
+        if not to_refine:
+            return results
+
+        if self._llm_client:
+            refined = self._classify_with_llm([r.file for r in to_refine])
+        else:
+            refined = self._classify_by_heuristics([r.file for r in to_refine])
+
+        return keep + refined
 
     def _classify_semantic(self, files: list[FileItem]) -> list[ClassifyResult]:
         return self._classify_with_llm(files)
 
     def _classify_with_llm(self, files: list[FileItem]) -> list[ClassifyResult]:
         if not self._llm_client:
-            return self._build_uncategorized_results(files)
+            return self._classify_by_heuristics(files)
 
-        categories = self._get_categories()
         batch_size = self._config.classify.batch_size
         results: list[ClassifyResult] = []
 
@@ -49,14 +70,88 @@ class Classifier:
             batch = files[i : i + batch_size]
             try:
                 category_map = self._llm_client.classify_batch(
-                    batch, categories, self._config.classify.mode
+                    batch, [], self._config.classify.mode
                 )
                 results.extend(self._map_llm_results(batch, category_map))
             except LLMUnavailableError:
-                logger.warning("LLM unavailable, falling back to uncategorized")
-                results.extend(self._build_uncategorized_results(batch))
+                logger.warning("LLM unavailable, falling back to heuristic classification")
+                results.extend(self._classify_by_heuristics(batch))
 
         return results
+
+    def _classify_by_heuristics(self, files: list[FileItem]) -> list[ClassifyResult]:
+        results: list[ClassifyResult] = []
+        for f in files:
+            category = self._guess_category(f)
+            results.append(
+                ClassifyResult(
+                    file=f,
+                    category=category,
+                    subcategory=None,
+                    confidence=0.5,
+                    method="rule",
+                    reason=f"启发式分类: {category}",
+                )
+            )
+        return results
+
+    def _guess_category(self, file: FileItem) -> str:
+        name = file.name.lower()
+
+        if any(kw in name for kw in ["invoice", "发票", "收据", "receipt"]):
+            return "发票"
+        if any(kw in name for kw in ["report", "报告", "总结", "summary"]):
+            return "报告"
+        if any(kw in name for kw in ["contract", "合同", "协议", "agreement"]):
+            return "合同"
+        if any(kw in name for kw in ["resume", "简历", "cv"]):
+            return "简历"
+        if any(kw in name for kw in ["screenshot", "截图", "screen", "截图"]):
+            return "截图"
+        if any(kw in name for kw in ["backup", "备份", "bak"]):
+            return "备份"
+        if any(kw in name for kw in ["logo", "icon", "头像", "avatar", "banner"]):
+            return "设计素材"
+        if any(kw in name for kw in ["wallpaper", "壁纸", "background"]):
+            return "壁纸"
+        if any(kw in name for kw in ["mem", "表情", "sticker", "emoji"]):
+            return "表情包"
+        if any(kw in name for kw in ["photo", "照片", "img", "pic", "camera", "dcim"]):
+            return "照片"
+        if any(kw in name for kw in ["doc", "文档", "document"]):
+            return "文档"
+        if any(kw in name for kw in ["install", "setup", "安装"]):
+            return "安装包"
+        if any(kw in name for kw in ["project", "项目"]):
+            return "项目"
+        if any(kw in name for kw in ["test", "测试"]):
+            return "测试"
+        if any(kw in name for kw in ["config", "配置", "setting"]):
+            return "配置"
+        if any(kw in name for kw in ["readme", "说明"]):
+            return "说明"
+
+        import re
+        date_pattern = r"(?:20\d{2})[\-_]?(?:0[1-9]|1[0-2])[\-_]?(?:0[1-9]|[12]\d|3[01])"
+        if re.search(date_pattern, name):
+            return "按日期归档"
+
+        if file.ext in (".pdf", ".doc", ".docx", ".txt", ".md", ".rtf"):
+            return "其他文档"
+        if file.ext in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"):
+            return "其他图片"
+        if file.ext in (".mp4", ".avi", ".mkv", ".mov", ".webm"):
+            return "其他视频"
+        if file.ext in (".mp3", ".wav", ".flac", ".aac", ".ogg"):
+            return "其他音频"
+        if file.ext in (".zip", ".rar", ".7z", ".tar", ".gz"):
+            return "其他压缩包"
+        if file.ext in (".js", ".ts", ".py", ".java", ".go", ".rs", ".cpp"):
+            return "代码片段"
+        if file.ext in (".json", ".yaml", ".yml", ".xml", ".csv"):
+            return "数据文件"
+
+        return "未分类"
 
     def _get_categories(self) -> list[str]:
         if self._config.classify.categories:
@@ -64,10 +159,7 @@ class Classifier:
                 c["name"] if isinstance(c, dict) else str(c)
                 for c in self._config.classify.categories
             ]
-        return [
-            "财务", "报告", "合同", "发票", "个人", "工作",
-            "学习", "娱乐", "截图", "备份", "临时", "未分类",
-        ]
+        return []
 
     def _build_rule_results(
         self, matched: dict[str, list[FileItem]]

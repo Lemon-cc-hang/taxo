@@ -22,7 +22,9 @@ ENV/
 *~
 
 # Tools
+.mise.toml
 .mise.local/
+.python-version
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/

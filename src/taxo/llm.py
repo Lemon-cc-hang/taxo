@@ -51,18 +51,23 @@ class LLMClient:
         return self._parse_response(raw)
 
     def _build_system_prompt(self, categories: list[str], mode: str) -> str:
-        cat_list = "、".join(categories)
-        return (
-            f"你是文件分类助手。根据文件名和元数据，将文件分类到以下类别：\n"
-            f"{cat_list}\n\n"
-            f"要求：\n"
-            f"1. 输出严格 JSON 格式\n"
-            f"2. 每个文件必须分配到一个类别\n"
-            f'3. 如果不确定，放入 "未分类"\n'
-            f"4. 不要添加任何解释文字\n\n"
-            f"输出格式：\n"
-            f'{{"categories": {{"类别名": ["文件名1", "文件名2"]}}, "uncategorized": []}}'
+        base = (
+            "你是文件分类助手。根据文件名和元数据，将文件分到合适的类别。\n"
+            "类别名由你根据文件内容自由创建，要求简短有意义（2-6个字），"
+            "例如：工作文档、旅行照片、学习资料、财务报表、项目代码 等。\n"
+            "相似的文件应归入同一类别。尽量合并，类别数越少越好。\n\n"
+            "要求：\n"
+            "1. 输出严格 JSON 格式\n"
+            "2. 每个文件必须分配到一个类别\n"
+            '3. 如果完全无法判断，放入 "未分类"\n'
+            "4. 不要添加任何解释文字\n\n"
+            "输出格式：\n"
+            '{"categories": {"类别名": ["文件名1", "文件名2"]}, "uncategorized": []}'
         )
+        if categories:
+            cat_list = "、".join(categories)
+            base += f"\n\n参考类别（可从中选择，也可自行创建新类别）：{cat_list}"
+        return base
 
     def _build_user_prompt(self, files: list[FileItem]) -> str:
         file_infos = []

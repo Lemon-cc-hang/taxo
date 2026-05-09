@@ -30,20 +30,20 @@ class TestClassifierRuleOnly:
     def test_all_rule_matched(self):
         config = TaxoConfig()
         classifier = Classifier(config)
-        files = [make_file("report.pdf"), make_file("photo.jpg")]
+        files = [make_file("song.mp3"), make_file("archive.zip")]
         results = classifier.classify(files)
         assert len(results) == 2
-        assert all(r.method == "rule" for r in results)
         categories = {r.category for r in results}
-        assert "文档" in categories
-        assert "图片" in categories
+        assert "音频" in categories
+        assert "压缩包" in categories
 
-    def test_confidence_is_1_for_rules(self):
+    def test_confidence_is_1_for_non_refined_rules(self):
         config = TaxoConfig()
         classifier = Classifier(config)
-        files = [make_file("report.pdf")]
+        files = [make_file("song.mp3")]
         results = classifier.classify(files)
         assert results[0].confidence == 1.0
+        assert results[0].method == "rule"
 
 
 class TestClassifierWithLLM:
@@ -52,11 +52,11 @@ class TestClassifierWithLLM:
         classifier = Classifier(config)
         mock_response = {"工作": ["ideas.xyz"]}
         with patch.object(classifier._llm_client, "classify_batch", return_value=mock_response):
-            files = [make_file("report.pdf"), make_file("ideas.xyz")]
+            files = [make_file("photo.jpg"), make_file("ideas.xyz")]
             results = classifier.classify(files)
             assert len(results) == 2
             rule_result = next(r for r in results if r.method == "rule")
-            assert rule_result.category == "文档"
+            assert rule_result.category == "图片"
             llm_result = next(r for r in results if r.method == "llm")
             assert llm_result.category == "工作"
 
