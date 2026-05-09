@@ -1,0 +1,55 @@
+# Taxo 默认配置
+# 复制此文件到 ~/.taxo/config.yaml 并修改相应配置
+# 或使用命令: taxo config set llm.api_key YOUR_KEY
+
+llm:
+  provider: deepseek
+  base_url: https://api.deepseek.com/v1
+  api_key: ""                    # 必填：通过 taxo config set llm.api_key sk-xxx 设置
+  model: deepseek-chat
+  timeout: 30
+  max_retries: 3
+  providers: []
+
+classify:
+  mode: hybrid                   # type | semantic | project | hybrid
+  content_analysis: false        # 是否读取文件内容（更准但更贵）
+  batch_size: 30                 # LLM 批量分类数量
+  max_tokens_per_call: 4000
+  categories: []                 # 自定义分类维度（为空使用默认）
+
+rules:
+  use_builtin: true
+  custom: []                     # 自定义规则，例如:
+                                 #   - pattern: "ext:.epub"
+                                 #     category: "电子书"
+
+organize:
+  target_dir: null               # null=原地整理，或指定目标目录
+  structure: flat                # flat | date
+  date_template: "{category}/{year}/{month}"
+  conflict_strategy: rename      # skip | rename | overwrite | ask
+  rename_template: "{name}_{timestamp}{ext}"
+
+scan:
+  exclude:
+    - ".*"
+    - "*.tmp"
+    - "*.part"
+    - "*.crdownload"
+  exclude_dirs:
+    - .git
+    - node_modules
+    - __pycache__
+  max_depth: null
+  min_size: 0
+  max_size: null
+
+watch:
+  debounce_seconds: 5
+  delay_seconds: 30
+
+cost:
+  monthly_budget: 5.0
+  max_cost_per_call: 0.01
+  over_budget_action: warn       # warn | block
