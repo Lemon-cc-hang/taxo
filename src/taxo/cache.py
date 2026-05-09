@@ -116,6 +116,19 @@ class CacheManager:
             "max": self._max_entries,
         }
 
+    def clear(self, dir_path: Path | None = None) -> int:
+        if dir_path:
+            cache_path = self._cache_dir / f"scan_{self._dir_key(dir_path)}.json"
+            if cache_path.exists():
+                cache_path.unlink()
+                return 1
+            return 0
+        count = 0
+        for f in self._cache_dir.glob("scan_*.json"):
+            f.unlink()
+            count += 1
+        return count
+
     def _file_key(self, file: FileItem) -> str:
         mtime = file.mtime if isinstance(file.mtime, (int, float)) else file.mtime.timestamp()
         return f"{file.path}:{file.size}:{mtime}"

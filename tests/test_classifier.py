@@ -172,3 +172,26 @@ class TestClassifierConcurrency:
             results = classifier.classify(files)
             assert len(results) == 5
             assert call_count == 3
+
+
+class TestClassifierCacheOnlyLLM:
+    def test_only_llm_results_cached(self, tmp_path):
+        from taxo.cache import CacheManager
+        from taxo.config import CacheConfig
+
+        config = TaxoConfig(llm=LLMConfig(api_key="sk-test"))
+        cache = CacheManager(tmp_path, ttl_days=30)
+        classifier = Classifier(config, cache)
+
+        def mock_classify(files, categories, mode):
+            return {"LLM类别": [f.name + f.ext for f in files]}
+
+        with patch.object(classifier._llm_client, "classify_batch", side_effect=mock_classify):
+            # song.mp3 -> rule match (音频), ideas.xyz -> LLM match
+            files = [make_file("song.mp3"), make_file("ideas.xyz")]
+            results = classifier.classify(files, source_dir=Path("/tmp/testdir"))
+
+        # Cache should only have the LLM result
+        assert cache.stats()["total"] == 1
+        assert cache.get(make_file("ideas.xyz")) is not None
+        assert cache.get(make_file("song.mp3")) is None

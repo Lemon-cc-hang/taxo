@@ -287,5 +287,44 @@ def rules_remove(index: int) -> None:
         console.print(f"[red]Invalid index: {index}. Use 'taxo rules list' to see available rules.[/red]")
 
 
+@cli.group()
+def cache() -> None:
+    """Manage classification cache."""
+    pass
+
+
+@cache.command("stats")
+def cache_stats() -> None:
+    """Show cache statistics."""
+    from taxo.config import CONFIG_DIR
+    cache_dir = CONFIG_DIR / "cache"
+    if not cache_dir.exists():
+        console.print("[dim]No cache data.[/dim]")
+        return
+    files = list(cache_dir.glob("scan_*.json"))
+    total = 0
+    for f in files:
+        import json
+        data = json.loads(f.read_text())
+        total += len(data)
+    console.print(f"Cache files: {len(files)}")
+    console.print(f"Cached entries: {total}")
+
+
+@cache.command("clear")
+@click.option("--dir", "dir_path", type=click.Path(), default=None, help="Clear cache for specific directory")
+def cache_clear(dir_path: str | None) -> None:
+    """Clear classification cache."""
+    from taxo.config import CONFIG_DIR
+    cm = CacheManager(cache_dir=CONFIG_DIR / "cache")
+    path = Path(dir_path) if dir_path else None
+    count = cm.clear(path)
+    if count:
+        target = f" for {dir_path}" if dir_path else ""
+        console.print(f"[green]Cleared {count} cache file(s){target}.[/green]")
+    else:
+        console.print("[dim]No cache to clear.[/dim]")
+
+
 if __name__ == "__main__":
     cli()

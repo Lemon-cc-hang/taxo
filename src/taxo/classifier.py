@@ -56,7 +56,8 @@ class Classifier:
                 new_results = self._classify_hybrid(missed_files)
 
             for r in new_results:
-                self._cache.put(r)
+                if r.method == "llm":
+                    self._cache.put(r)
             cached_results.extend(new_results)
 
         self._cache.save()

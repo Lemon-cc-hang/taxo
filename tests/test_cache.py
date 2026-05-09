@@ -159,3 +159,31 @@ class TestCacheManager:
         cache.put(make_result(make_file("a.pdf")))
         cache.put(make_result(make_file("b.pdf")))
         assert cache.stats()["total"] == 2
+
+    def test_clear_all(self, tmp_path):
+        cache = CacheManager(tmp_path)
+        cache.load(Path("/tmp/testdir"))
+        cache.put(make_result(make_file("a.pdf")))
+        cache.put(make_result(make_file("b.pdf")))
+        cache.save()
+
+        count = cache.clear()
+        assert count == 1
+        assert not (tmp_path / f"scan_{cache._dir_key(Path('/tmp/testdir'))}.json").exists()
+
+    def test_clear_specific_dir(self, tmp_path):
+        cache = CacheManager(tmp_path)
+        cache.load(Path("/tmp/testdir_a"))
+        cache.put(make_result(make_file("a.pdf")))
+        cache.save()
+
+        cache.load(Path("/tmp/testdir_b"))
+        cache.put(make_result(make_file("b.pdf")))
+        cache.save()
+
+        count = cache.clear(Path("/tmp/testdir_a"))
+        assert count == 1
+
+        cache2 = CacheManager(tmp_path)
+        cache2.load(Path("/tmp/testdir_b"))
+        assert cache2.get(make_file("b.pdf")) is not None
