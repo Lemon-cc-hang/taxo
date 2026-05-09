@@ -114,3 +114,61 @@ class TestClassifierModes:
         classifier = Classifier(config)
         results = classifier.classify([])
         assert results == []
+
+
+class TestClassifierConcurrency:
+    def test_concurrent_llm_batches_complete(self):
+        config = TaxoConfig(
+            llm=LLMConfig(api_key="sk-test"),
+            classify=ClassifyConfig(batch_size=2, max_workers=3),
+        )
+        classifier = Classifier(config)
+
+        def mock_classify(files, categories, mode):
+            return {"未分类": [f.name + f.ext for f in files]}
+
+        with patch.object(classifier._llm_client, "classify_batch", side_effect=mock_classify):
+            files = [make_file(f"file{i}.xyz") for i in range(7)]
+            results = classifier.classify(files)
+            assert len(results) == 7
+            assert all(r.method == "llm" for r in results)
+
+    def test_concurrent_preserves_order(self):
+        config = TaxoConfig(
+            llm=LLMConfig(api_key="sk-test"),
+            classify=ClassifyConfig(batch_size=2, max_workers=3),
+        )
+        classifier = Classifier(config)
+        call_count = 0
+
+        def mock_classify(files, categories, mode):
+            nonlocal call_count
+            call_count += 1
+            # Each batch returns files with category based on their index
+            return {f"cat_{call_count}": [f.name + f.ext for f in files]}
+
+        with patch.object(classifier._llm_client, "classify_batch", side_effect=mock_classify):
+            files = [make_file(f"file{i}.xyz") for i in range(6)]
+            results = classifier.classify(files)
+            names = [r.file.name + r.file.ext for r in results]
+            expected = [f"file{i}.xyz" for i in range(6)]
+            assert names == expected
+
+    def test_single_worker_is_serial(self):
+        config = TaxoConfig(
+            llm=LLMConfig(api_key="sk-test"),
+            classify=ClassifyConfig(batch_size=2, max_workers=1),
+        )
+        classifier = Classifier(config)
+        call_count = 0
+
+        def mock_classify(files, categories, mode):
+            nonlocal call_count
+            call_count += 1
+            return {"未分类": [f.name + f.ext for f in files]}
+
+        with patch.object(classifier._llm_client, "classify_batch", side_effect=mock_classify):
+            files = [make_file(f"file{i}.xyz") for i in range(5)]
+            results = classifier.classify(files)
+            assert len(results) == 5
+            assert call_count == 3

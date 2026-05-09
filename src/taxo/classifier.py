@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
+from taxo.cache import CacheManager
 from taxo.config import TaxoConfig
 from taxo.llm import LLMClient, LLMUnavailableError
 from taxo.models import ClassifyResult, FileItem
@@ -11,19 +14,58 @@ logger = logging.getLogger(__name__)
 
 
 class Classifier:
-    def __init__(self, config: TaxoConfig) -> None:
+    def __init__(self, config: TaxoConfig, cache: CacheManager | None = None) -> None:
         self._config = config
         self._rule_engine = RuleEngine(config.rules)
         self._llm_client = LLMClient(config.llm) if config.llm.api_key else None
+        self._cache = cache
 
-    def classify(self, files: list[FileItem]) -> list[ClassifyResult]:
+    def classify(
+        self, files: list[FileItem], source_dir: Path | None = None
+    ) -> list[ClassifyResult]:
         if not files:
             return []
+
+        if self._cache and source_dir:
+            return self._classify_with_cache(files, source_dir)
 
         if self._config.classify.mode == "semantic":
             return self._classify_semantic(files)
 
         return self._classify_hybrid(files)
+
+    def _classify_with_cache(
+        self, files: list[FileItem], source_dir: Path
+    ) -> list[ClassifyResult]:
+        self._cache.load(source_dir)
+
+        cached_results: list[ClassifyResult] = []
+        missed_files: list[FileItem] = []
+
+        for f in files:
+            hit = self._cache.get(f)
+            if hit is not None:
+                cached_results.append(hit)
+            else:
+                missed_files.append(f)
+
+        if missed_files:
+            if self._config.classify.mode == "semantic":
+                new_results = self._classify_semantic(missed_files)
+            else:
+                new_results = self._classify_hybrid(missed_files)
+
+            for r in new_results:
+                self._cache.put(r)
+            cached_results.extend(new_results)
+
+        self._cache.save()
+
+        hit_count = len(cached_results) - len(missed_files)
+        if hit_count > 0:
+            logger.info(f"Cache: {hit_count} hits, {len(missed_files)} misses")
+
+        return cached_results
 
     def _classify_hybrid(self, files: list[FileItem]) -> list[ClassifyResult]:
         matched, unmatched = self._rule_engine.classify(files)
@@ -64,18 +106,33 @@ class Classifier:
             return self._classify_by_heuristics(files)
 
         batch_size = self._config.classify.batch_size
-        results: list[ClassifyResult] = []
+        max_workers = self._config.classify.max_workers
+        batches = [files[i : i + batch_size] for i in range(0, len(files), batch_size)]
 
-        for i in range(0, len(files), batch_size):
-            batch = files[i : i + batch_size]
+        def classify_one(batch: list[FileItem]) -> list[ClassifyResult]:
             try:
                 category_map = self._llm_client.classify_batch(
                     batch, [], self._config.classify.mode
                 )
-                results.extend(self._map_llm_results(batch, category_map))
+                return self._map_llm_results(batch, category_map)
             except LLMUnavailableError:
                 logger.warning("LLM unavailable, falling back to heuristic classification")
-                results.extend(self._classify_by_heuristics(batch))
+                return self._classify_by_heuristics(batch)
+
+        results: list[ClassifyResult] = []
+
+        if len(batches) <= 1 or max_workers <= 1:
+            for batch in batches:
+                results.extend(classify_one(batch))
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {pool.submit(classify_one, b): i for i, b in enumerate(batches)}
+                ordered: list[list[ClassifyResult] | None] = [None] * len(batches)
+                for future in as_completed(futures):
+                    ordered[futures[future]] = future.result()
+            for batch_results in ordered:
+                if batch_results:
+                    results.extend(batch_results)
 
         return results
 

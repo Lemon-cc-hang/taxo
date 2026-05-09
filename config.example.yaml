@@ -17,6 +17,7 @@ classify:
   batch_size: 30                 # LLM 批量分类数量
   max_tokens_per_call: 4000
   categories: []                 # 自定义分类维度（为空使用默认）
+  max_workers: 3                 # LLM 并发批次数（1=串行）
 
 rules:
   use_builtin: true
@@ -30,6 +31,7 @@ organize:
   date_template: "{category}/{year}/{month}"
   conflict_strategy: rename      # skip | rename | overwrite | ask
   rename_template: "{name}_{timestamp}{ext}"
+  move_workers: 4                # 并发文件移动数（1=串行）
 
 scan:
   exclude:
@@ -48,6 +50,11 @@ scan:
 watch:
   debounce_seconds: 5
   delay_seconds: 30
+
+cache:
+  enabled: true                  # 是否启用分类缓存
+  ttl_days: 30                   # 缓存过期天数
+  max_entries: 10000             # 单目录最大缓存条目
 
 cost:
   monthly_budget: 5.0

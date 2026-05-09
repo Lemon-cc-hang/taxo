@@ -6,8 +6,9 @@ import click
 from rich.console import Console
 
 from taxo import __version__
+from taxo.cache import CacheManager
 from taxo.classifier import Classifier
-from taxo.config import TaxoConfig, load_config, save_config
+from taxo.config import TaxoConfig, load_config, save_config, CONFIG_DIR
 from taxo.display import print_execute_result, print_history, print_plan_preview, print_scan_table
 from taxo.executor import Executor
 from taxo.history import HistoryManager
@@ -22,8 +23,17 @@ def _get_config() -> TaxoConfig:
     return load_config()
 
 
+def _get_cache_manager(config: TaxoConfig) -> CacheManager | None:
+    if not config.cache.enabled:
+        return None
+    return CacheManager(
+        cache_dir=CONFIG_DIR / "cache",
+        ttl_days=config.cache.ttl_days,
+        max_entries=config.cache.max_entries,
+    )
+
+
 def _get_history_manager(config: TaxoConfig | None = None) -> HistoryManager:
-    from taxo.config import CONFIG_DIR
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     return HistoryManager(CONFIG_DIR / "history.jsonl")
 
@@ -54,8 +64,8 @@ def scan(path: str, mode: str | None, output_fmt: str, max_depth: int | None) ->
         console.print("[dim]No files found.[/dim]")
         return
 
-    classifier = Classifier(config)
-    results = classifier.classify(files)
+    classifier = Classifier(config, _get_cache_manager(config))
+    results = classifier.classify(files, source_dir=directory)
 
     if output_fmt == "json":
         import json
@@ -95,8 +105,8 @@ def organize(path: str, mode: str | None, yes: bool, dry_run: bool, target: str 
         console.print("[dim]No files found.[/dim]")
         return
 
-    classifier = Classifier(config)
-    results = classifier.classify(files)
+    classifier = Classifier(config, _get_cache_manager(config))
+    results = classifier.classify(files, source_dir=directory)
 
     planner = Planner(config.organize)
     plan = planner.create_plan(results, directory)
@@ -114,7 +124,7 @@ def organize(path: str, mode: str | None, yes: bool, dry_run: bool, target: str 
             return
 
     hm = _get_history_manager(config)
-    executor = Executor(hm)
+    executor = Executor(hm, move_workers=config.organize.move_workers)
     result = executor.execute(plan, dry_run=dry_run)
     print_execute_result(console, result)
 

@@ -120,3 +120,62 @@ class TestExecutorRealRun:
         last = hm.get_last()
         assert last is not None
         assert last.status == "failed"
+
+
+class TestExecutorConcurrency:
+    def test_concurrent_moves(self, tmp_path):
+        src = tmp_path / "source"
+        src.mkdir()
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        files = []
+        for i in range(10):
+            f = src / f"file{i}.txt"
+            f.write_text(f"content_{i}")
+            files.append((str(f), str(dest / f"file{i}.txt"), "move"))
+
+        hm = HistoryManager(tmp_path / "history.jsonl")
+        executor = Executor(hm, move_workers=4)
+        plan = make_plan(src, files)
+        result = executor.execute(plan, dry_run=False)
+        assert result.success == 10
+        assert result.failed == 0
+        for i in range(10):
+            assert (dest / f"file{i}.txt").read_text() == f"content_{i}"
+
+    def test_concurrent_creates_target_dirs(self, tmp_path):
+        src = tmp_path / "source"
+        src.mkdir()
+        files = []
+        for i in range(5):
+            f = src / f"file{i}.txt"
+            f.write_text(f"x_{i}")
+            target = tmp_path / f"cat{i}" / f"file{i}.txt"
+            files.append((str(f), str(target), "move"))
+
+        hm = HistoryManager(tmp_path / "history.jsonl")
+        executor = Executor(hm, move_workers=4)
+        plan = make_plan(src, files)
+        result = executor.execute(plan, dry_run=False)
+        assert result.success == 5
+        for i in range(5):
+            assert (tmp_path / f"cat{i}" / f"file{i}.txt").exists()
+
+    def test_single_worker_is_serial(self, tmp_path):
+        src = tmp_path / "source"
+        src.mkdir()
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        (src / "a.txt").write_text("a")
+        (src / "b.txt").write_text("b")
+
+        hm = HistoryManager(tmp_path / "history.jsonl")
+        executor = Executor(hm, move_workers=1)
+        plan = make_plan(src, [
+            (str(src / "a.txt"), str(dest / "a.txt"), "move"),
+            (str(src / "b.txt"), str(dest / "b.txt"), "move"),
+        ])
+        result = executor.execute(plan, dry_run=False)
+        assert result.success == 2
+        assert (dest / "a.txt").exists()
+        assert (dest / "b.txt").exists()

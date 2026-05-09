@@ -36,6 +36,7 @@ class ClassifyConfig(BaseModel):
     batch_size: int = 30
     max_tokens_per_call: int = 4000
     categories: list[dict] = []
+    max_workers: int = 3
 
 
 class RuleConfig(BaseModel):
@@ -49,6 +50,7 @@ class OrganizeConfig(BaseModel):
     date_template: str = "{category}/{year}/{month}"
     conflict_strategy: Literal["skip", "rename", "overwrite", "ask"] = "rename"
     rename_template: str = "{name}_{timestamp}{ext}"
+    move_workers: int = 4
 
 
 class ScanConfig(BaseModel):
@@ -70,6 +72,12 @@ class CostConfig(BaseModel):
     over_budget_action: Literal["warn", "block"] = "warn"
 
 
+class CacheConfig(BaseModel):
+    enabled: bool = True
+    ttl_days: int = 30
+    max_entries: int = 10000
+
+
 class TaxoConfig(BaseModel):
     llm: LLMConfig = LLMConfig()
     classify: ClassifyConfig = ClassifyConfig()
@@ -78,6 +86,7 @@ class TaxoConfig(BaseModel):
     scan: ScanConfig = ScanConfig()
     watch: WatchConfig = WatchConfig()
     cost: CostConfig = CostConfig()
+    cache: CacheConfig = CacheConfig()
 
 
 def get_default_config() -> TaxoConfig:
