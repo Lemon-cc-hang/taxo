@@ -1,0 +1,75 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: macos-arm64
+          - os: macos-13
+            target: macos-x86_64
+          - os: ubuntu-latest
+            target: linux-x86_64
+          - os: windows-latest
+            target: windows-x86_64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Build binary
+        run: |
+          uv run pyinstaller --onefile --name taxo src/taxo/cli.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: taxo-${{ matrix.target }}
+          path: |
+            dist/taxo
+            dist/taxo.exe
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          cp artifacts/taxo-macos-arm64/taxo release/taxo-macos-arm64
+          cp artifacts/taxo-macos-x86_64/taxo release/taxo-macos-x86_64
+          cp artifacts/taxo-linux-x86_64/taxo release/taxo-linux-x86_64
+          cp artifacts/taxo-windows-x86_64/taxo.exe release/taxo-windows-x86_64.exe
+          chmod +x release/taxo-*
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
