@@ -33,7 +33,7 @@ class TestDefaultConfig:
         config = get_default_config()
         assert config.llm.base_url == "https://api.deepseek.com/v1"
         assert config.llm.model == "deepseek-chat"
-        assert config.llm.timeout == 30
+        assert config.llm.timeout == 60
         assert config.llm.max_retries == 3
         assert config.llm.api_key == ""
 
@@ -87,7 +87,7 @@ class TestLoadSaveConfig:
             with patch("taxo.config.CONFIG_FILE", config_file):
                 config = load_config()
                 assert config.llm.model == "glm-4"
-                assert config.llm.timeout == 30
+                assert config.llm.timeout == 60
                 assert config.classify.mode == "hybrid"
 
 

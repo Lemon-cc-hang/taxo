@@ -3,7 +3,7 @@ from datetime import datetime
 from pathlib import Path
 
 from taxo.config import ScanConfig
-from taxo.scanner import scan_files
+from taxo.scanner import scan_files, scan_dir_structure
 
 
 class TestScanFiles:
@@ -136,3 +136,33 @@ class TestScanFiles:
         f = results[0]
         assert f.name == "Makefile"
         assert f.ext == ""
+
+
+class TestScanDirStructure:
+    def test_returns_subdirectory_names(self, tmp_path):
+        (tmp_path / "工作文档").mkdir()
+        (tmp_path / "旅行照片").mkdir()
+        (tmp_path / "some_file.txt").write_text("file")
+        dirs = scan_dir_structure(tmp_path)
+        assert dirs == ["工作文档", "旅行照片"]
+
+    def test_excludes_hidden_dirs(self, tmp_path):
+        (tmp_path / ".hidden").mkdir()
+        (tmp_path / "visible").mkdir()
+        dirs = scan_dir_structure(tmp_path)
+        assert dirs == ["visible"]
+
+    def test_returns_sorted(self, tmp_path):
+        (tmp_path / "zebra").mkdir()
+        (tmp_path / "alpha").mkdir()
+        (tmp_path / "mid").mkdir()
+        dirs = scan_dir_structure(tmp_path)
+        assert dirs == ["alpha", "mid", "zebra"]
+
+    def test_empty_directory(self, tmp_path):
+        dirs = scan_dir_structure(tmp_path)
+        assert dirs == []
+
+    def test_no_permission(self):
+        dirs = scan_dir_structure(Path("/nonexistent"))
+        assert dirs == []

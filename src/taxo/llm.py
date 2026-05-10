@@ -35,22 +35,48 @@ class LLMClient:
         files: list[FileItem],
         categories: list[str],
         mode: str,
-    ) -> dict[str, list[str]]:
+        existing_dirs: list[str] | None = None,
+    ) -> tuple[dict[str, list[str]], int]:
         if not files:
-            return {}
+            return {}, 0
 
-        system_prompt = self._build_system_prompt(categories, mode)
-        user_prompt = self._build_user_prompt(files)
+        existing_dirs = existing_dirs or []
+        system_prompt = self._build_system_prompt(categories, mode, existing_dirs)
+        user_prompt = self._build_user_prompt(files, existing_dirs)
 
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
 
-        raw = self._call_api(messages)
-        return self._parse_response(raw)
+        raw, elapsed_ms = self._call_api(messages)
+        result = self._parse_response(raw)
+        logger.info(f"LLM batch: {len(files)} files, {elapsed_ms}ms, {len(result)} categories")
+        return result, elapsed_ms
 
-    def _build_system_prompt(self, categories: list[str], mode: str) -> str:
+    def _build_system_prompt(self, categories: list[str], mode: str, existing_dirs: list[str] | None = None) -> str:
+        existing_dirs = existing_dirs or []
+
+        if mode == "semantic":
+            base = (
+                "你是文件分类助手。你需要将文件整理到一个已有子目录结构的文件夹中。\n\n"
+                "规则：\n"
+                "1. 优先将文件归入已有的子目录（如果内容匹配）\n"
+                '2. 临时文件归入"临时文件"，包括：截图、安装包、日志、缓存、.tmp、'
+                "单字母/极短无意义命名（如 a.sql、b.txt、x.py）\n"
+                "3. 只在没有合适目录时才创建新类别\n"
+                "4. 类别名要简短有意义（2-6个字）\n"
+                "5. 相同模式命名的文件（如纯数字.json、UUID.xlsx）必须归入同一类别\n\n"
+            )
+            if existing_dirs:
+                base += f"已有子目录：{', '.join(existing_dirs)}\n\n"
+            base += (
+                "输出格式：\n"
+                '{"categories": {"类别名": ["文件名1", "文件名2"]}, "uncategorized": []}\n'
+                "严格 JSON，不要解释文字。"
+            )
+            return base
+
         base = (
             "你是文件分类助手。根据文件名和元数据，将文件分到合适的类别。\n"
             "类别名由你根据文件内容自由创建，要求简短有意义（2-6个字），"
@@ -69,7 +95,7 @@ class LLMClient:
             base += f"\n\n参考类别（可从中选择，也可自行创建新类别）：{cat_list}"
         return base
 
-    def _build_user_prompt(self, files: list[FileItem]) -> str:
+    def _build_user_prompt(self, files: list[FileItem], existing_dirs: list[str] | None = None) -> str:
         file_infos = []
         for f in files:
             info: dict[str, Any] = {
@@ -78,27 +104,37 @@ class LLMClient:
                 "size": f.size,
             }
             file_infos.append(info)
-        return f"请分类以下文件：\n{json.dumps(file_infos, ensure_ascii=False, indent=2)}"
+        prompt = f"请分类以下文件：\n{json.dumps(file_infos, ensure_ascii=False, indent=2)}"
+        return prompt
 
-    def _call_api(self, messages: list[dict]) -> str:
+    def _call_api(self, messages: list[dict]) -> tuple[str, int]:
         payload = {
             "model": self._config.model,
             "messages": messages,
             "temperature": 0.1,
+            "max_tokens": self._config.max_tokens_per_call,
         }
         last_error: Exception | None = None
 
         for attempt in range(self._config.max_retries):
+            start = time.monotonic()
             try:
                 response = self._client.post("/chat/completions", json=payload)
                 response.raise_for_status()
                 data = response.json()
-                return data["choices"][0]["message"]["content"]
+                elapsed_ms = int((time.monotonic() - start) * 1000)
+                content = data["choices"][0]["message"]["content"]
+                return content, elapsed_ms
             except httpx.ConnectError as e:
+                elapsed_ms = int((time.monotonic() - start) * 1000)
                 raise LLMUnavailableError(f"Cannot connect to {self._config.base_url}") from e
             except (httpx.TimeoutException, httpx.HTTPStatusError) as e:
+                elapsed_ms = int((time.monotonic() - start) * 1000)
                 last_error = e
-                logger.warning(f"LLM API attempt {attempt + 1} failed: {e}")
+                logger.warning(
+                    f"LLM API retry {attempt + 1}/{self._config.max_retries}: "
+                    f"{type(e).__name__}, {elapsed_ms}ms"
+                )
                 if attempt < self._config.max_retries - 1:
                     time.sleep(2 ** attempt)
 

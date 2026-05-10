@@ -25,18 +25,18 @@ class LLMConfig(BaseModel):
     base_url: str = "https://api.deepseek.com/v1"
     api_key: str = ""
     model: str = "deepseek-chat"
-    timeout: int = 30
+    timeout: int = 60
     max_retries: int = 3
+    max_tokens_per_call: int = 16000
     providers: list[LLMProviderConfig] = []
 
 
 class ClassifyConfig(BaseModel):
-    mode: Literal["type", "semantic", "project", "hybrid"] = "hybrid"
+    mode: Literal["type", "hybrid", "semantic"] = "hybrid"
     content_analysis: bool = False
     batch_size: int = 30
-    max_tokens_per_call: int = 4000
     categories: list[dict] = []
-    max_workers: int = 3
+    max_workers: int = 5
 
 
 class RuleConfig(BaseModel):

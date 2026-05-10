@@ -50,7 +50,7 @@ class TestClassifierWithLLM:
     def test_llm_classifies_unmatched_files(self):
         config = TaxoConfig(llm=LLMConfig(api_key="sk-test"))
         classifier = Classifier(config)
-        mock_response = {"工作": ["ideas.xyz"]}
+        mock_response = ({"工作": ["ideas.xyz"]}, 500)
         with patch.object(classifier._llm_client, "classify_batch", return_value=mock_response):
             files = [make_file("photo.jpg"), make_file("ideas.xyz")]
             results = classifier.classify(files)
@@ -82,7 +82,7 @@ class TestClassifierWithLLM:
         def mock_classify(files, categories, mode):
             nonlocal call_count
             call_count += 1
-            return {"未分类": [f.name + f.ext for f in files]}
+            return {"未分类": [f.name + f.ext for f in files]}, 100
 
         with patch.object(classifier._llm_client, "classify_batch", side_effect=mock_classify):
             files = [make_file(f"file{i}.xyz") for i in range(5)]
@@ -98,16 +98,75 @@ class TestClassifierModes:
         results = classifier.classify(files)
         assert results[0].category == "图片"
 
+    def test_type_mode_no_llm_even_with_api_key(self):
+        config = TaxoConfig(
+            llm=LLMConfig(api_key="sk-test"),
+            classify=ClassifyConfig(mode="type"),
+        )
+        classifier = Classifier(config)
+        with patch.object(classifier._llm_client, "classify_batch") as mock_llm:
+            files = [make_file("unknown.xyz")]
+            results = classifier.classify(files)
+            mock_llm.assert_not_called()
+            assert results[0].method == "rule"
+
     def test_semantic_mode_sends_all_to_llm(self):
         config = TaxoConfig(
             classify=ClassifyConfig(mode="semantic"),
             llm=LLMConfig(api_key="sk-test"),
         )
         classifier = Classifier(config)
-        with patch.object(classifier._llm_client, "classify_batch", return_value={"截图": ["photo.jpg"]}) as mock_llm:
+        with patch.object(classifier._llm_client, "classify_batch", return_value=({"截图": ["photo.jpg"]}, 200)) as mock_llm:
             files = [make_file("photo.jpg")]
             results = classifier.classify(files)
             mock_llm.assert_called_once()
+            call_kwargs = mock_llm.call_args
+            assert call_kwargs[1].get("existing_dirs") is not None or len(call_kwargs[0]) >= 4
+
+    def test_semantic_mode_passes_existing_dirs(self, tmp_path):
+        from taxo.scanner import scan_dir_structure
+
+        subdir_a = tmp_path / "工作文档"
+        subdir_b = tmp_path / "旅行照片"
+        subdir_a.mkdir()
+        subdir_b.mkdir()
+
+        dirs = scan_dir_structure(tmp_path)
+        assert "工作文档" in dirs
+        assert "旅行照片" in dirs
+        assert len(dirs) == 2
+
+        config = TaxoConfig(
+            classify=ClassifyConfig(mode="semantic"),
+            llm=LLMConfig(api_key="sk-test"),
+        )
+        classifier = Classifier(config)
+        with patch.object(classifier._llm_client, "classify_batch", return_value=({"工作文档": ["ideas.xyz"]}, 300)) as mock_llm:
+            files = [FileItem(
+                path=tmp_path / "ideas.xyz",
+                name="ideas",
+                ext=".xyz",
+                size=1024,
+                mtime=datetime(2026, 5, 1, 12, 0, 0),
+                ctime=datetime(2026, 5, 1, 12, 0, 0),
+                is_hidden=False,
+                is_symlink=False,
+            )]
+            results = classifier.classify(files)
+            mock_llm.assert_called_once()
+            call_args = mock_llm.call_args
+            existing_dirs = call_args.kwargs.get("existing_dirs") or call_args[1].get("existing_dirs")
+            assert existing_dirs is not None
+            assert "工作文档" in existing_dirs
+            assert "旅行照片" in existing_dirs
+
+    def test_semantic_mode_falls_back_without_llm(self):
+        config = TaxoConfig(classify=ClassifyConfig(mode="semantic"))
+        classifier = Classifier(config)
+        files = [make_file("photo.jpg")]
+        results = classifier.classify(files)
+        assert results[0].category == "图片"
+        assert results[0].method == "rule"
 
     def test_empty_files(self):
         config = TaxoConfig()
@@ -124,8 +183,8 @@ class TestClassifierConcurrency:
         )
         classifier = Classifier(config)
 
-        def mock_classify(files, categories, mode):
-            return {"未分类": [f.name + f.ext for f in files]}
+        def mock_classify(files, categories, mode, **kwargs):
+            return {"未分类": [f.name + f.ext for f in files]}, 100
 
         with patch.object(classifier._llm_client, "classify_batch", side_effect=mock_classify):
             files = [make_file(f"file{i}.xyz") for i in range(7)]
@@ -141,11 +200,10 @@ class TestClassifierConcurrency:
         classifier = Classifier(config)
         call_count = 0
 
-        def mock_classify(files, categories, mode):
+        def mock_classify(files, categories, mode, **kwargs):
             nonlocal call_count
             call_count += 1
-            # Each batch returns files with category based on their index
-            return {f"cat_{call_count}": [f.name + f.ext for f in files]}
+            return {f"cat_{call_count}": [f.name + f.ext for f in files]}, 100
 
         with patch.object(classifier._llm_client, "classify_batch", side_effect=mock_classify):
             files = [make_file(f"file{i}.xyz") for i in range(6)]
@@ -162,10 +220,10 @@ class TestClassifierConcurrency:
         classifier = Classifier(config)
         call_count = 0
 
-        def mock_classify(files, categories, mode):
+        def mock_classify(files, categories, mode, **kwargs):
             nonlocal call_count
             call_count += 1
-            return {"未分类": [f.name + f.ext for f in files]}
+            return {"未分类": [f.name + f.ext for f in files]}, 100
 
         with patch.object(classifier._llm_client, "classify_batch", side_effect=mock_classify):
             files = [make_file(f"file{i}.xyz") for i in range(5)]
@@ -183,8 +241,8 @@ class TestClassifierCacheOnlyLLM:
         cache = CacheManager(tmp_path, ttl_days=30)
         classifier = Classifier(config, cache)
 
-        def mock_classify(files, categories, mode):
-            return {"LLM类别": [f.name + f.ext for f in files]}
+        def mock_classify(files, categories, mode, **kwargs):
+            return {"LLM类别": [f.name + f.ext for f in files]}, 100
 
         with patch.object(classifier._llm_client, "classify_batch", side_effect=mock_classify):
             # song.mp3 -> rule match (音频), ideas.xyz -> LLM match

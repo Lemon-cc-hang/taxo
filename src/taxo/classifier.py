@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import logging
+import re
+import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Any
 
 from taxo.cache import CacheManager
 from taxo.config import TaxoConfig
@@ -29,6 +33,8 @@ class Classifier:
         if self._cache and source_dir:
             return self._classify_with_cache(files, source_dir)
 
+        if self._config.classify.mode == "type":
+            return self._classify_type(files)
         if self._config.classify.mode == "semantic":
             return self._classify_semantic(files)
 
@@ -41,6 +47,7 @@ class Classifier:
 
         cached_results: list[ClassifyResult] = []
         missed_files: list[FileItem] = []
+        use_merge = False
 
         for f in files:
             hit = self._cache.get(f)
@@ -50,15 +57,23 @@ class Classifier:
                 missed_files.append(f)
 
         if missed_files:
-            if self._config.classify.mode == "semantic":
-                new_results = self._classify_semantic(missed_files)
+            if self._config.classify.mode == "type":
+                new_results = self._classify_type(missed_files)
+            elif self._config.classify.mode == "semantic":
+                new_results = self._classify_semantic_no_cache(missed_files)
+                use_merge = True
             else:
                 new_results = self._classify_hybrid(missed_files)
 
+            cached_results.extend(new_results)
+
+        if use_merge:
+            cached_results = self._merge_categories(cached_results)
+
+        if missed_files:
             for r in new_results:
                 if r.method == "llm":
                     self._cache.put(r)
-            cached_results.extend(new_results)
 
         self._cache.save()
 
@@ -84,6 +99,13 @@ class Classifier:
 
         return results
 
+    def _classify_type(self, files: list[FileItem]) -> list[ClassifyResult]:
+        matched, unmatched = self._rule_engine.classify(files)
+        results = self._build_rule_results(matched)
+        if unmatched:
+            results.extend(self._classify_by_heuristics(unmatched))
+        return results
+
     def _refine_rule_results(self, results: list[ClassifyResult]) -> list[ClassifyResult]:
         needs_refine = {"文档"}
         to_refine = [r for r in results if r.category in needs_refine]
@@ -100,22 +122,58 @@ class Classifier:
         return keep + refined
 
     def _classify_semantic(self, files: list[FileItem]) -> list[ClassifyResult]:
-        return self._classify_with_llm(files)
+        """Semantic mode entry point (cache not involved)."""
+        results = self._classify_semantic_no_cache(files)
+        return self._merge_categories(results)
+
+    def _classify_semantic_no_cache(self, files: list[FileItem]) -> list[ClassifyResult]:
+        """Semantic mode core logic, reusable from cache path."""
+        if not self._llm_client:
+            return self._classify_hybrid(files)
+
+        from taxo.scanner import scan_dir_structure
+
+        source_dir = files[0].path.parent if files else None
+        existing_dirs = scan_dir_structure(source_dir) if source_dir else []
+
+        return self._run_llm_batches(
+            files, existing_dirs=existing_dirs, label="Semantic"
+        )
 
     def _classify_with_llm(self, files: list[FileItem]) -> list[ClassifyResult]:
+        """LLM classification for hybrid mode — no global merge."""
         if not self._llm_client:
             return self._classify_by_heuristics(files)
 
+        return self._run_llm_batches(files, label="LLM")
+
+    def _run_llm_batches(
+        self,
+        files: list[FileItem],
+        existing_dirs: list[str] | None = None,
+        label: str = "LLM",
+    ) -> list[ClassifyResult]:
+        """Shared batch runner with concurrency and per-batch logging."""
         batch_size = self._config.classify.batch_size
         max_workers = self._config.classify.max_workers
         batches = [files[i : i + batch_size] for i in range(0, len(files), batch_size)]
+        logger.info(
+            f"{label} classify: {len(files)} files, {len(batches)} batches, "
+            f"batch_size={batch_size}, max_workers={max_workers}"
+        )
 
         def classify_one(batch: list[FileItem]) -> list[ClassifyResult]:
+            batch_start = time.monotonic()
             try:
-                category_map = self._llm_client.classify_batch(
-                    batch, [], self._config.classify.mode
+                kwargs: dict[str, Any] = {}
+                if existing_dirs is not None:
+                    kwargs["existing_dirs"] = existing_dirs
+                category_map, api_ms = self._llm_client.classify_batch(
+                    batch, [], self._config.classify.mode, **kwargs
                 )
-                return self._map_llm_results(batch, category_map)
+                batch_ms = int((time.monotonic() - batch_start) * 1000)
+                logger.info(f"Batch done: {len(batch)} files, api={api_ms}ms, total={batch_ms}ms")
+                return self._map_llm_results(batch, category_map, api_ms)
             except LLMUnavailableError:
                 logger.warning("LLM unavailable, falling back to heuristic classification")
                 return self._classify_by_heuristics(batch)
@@ -137,6 +195,85 @@ class Classifier:
 
         return results
 
+    def _merge_categories(self, results: list[ClassifyResult]) -> list[ClassifyResult]:
+        """Post-process: unify LLM results split across batches.
+
+        Two passes:
+        1. Naming pattern merge: digits.json / uuid.xlsx / prefix-123.csv grouped together
+        2. Extension merge (conservative): only when ALL files of an ext share a
+           naming pattern (pure digits / UUID / single-char), meaning they are
+           clearly auto-generated and should be in one category.
+        """
+        if not results:
+            return results
+
+        llm_results = [r for r in results if r.method == "llm"]
+
+        def file_pattern(r: ClassifyResult) -> str | None:
+            name = r.file.name.lower()
+            ext = r.file.ext.lower()
+            if re.fullmatch(r"\d+", name):
+                return f"digits{ext}"
+            if re.fullmatch(r"[0-9a-f]{20,}", name):
+                return f"uuid{ext}"
+            m = re.match(r"^(.+?)[-_]?\d{5,}$", name)
+            if m:
+                return f"prefix-{m.group(1)}{ext}"
+            return None
+
+        merged_count = 0
+
+        # Pass 1: merge by naming pattern
+        pattern_groups: dict[str, list[ClassifyResult]] = {}
+        for r in llm_results:
+            pat = file_pattern(r)
+            if pat:
+                pattern_groups.setdefault(pat, []).append(r)
+
+        for group in pattern_groups.values():
+            categories = Counter(r.category for r in group)
+            if len(categories) <= 1:
+                continue
+            majority = categories.most_common(1)[0][0]
+            for r in group:
+                if r.category != majority:
+                    logger.debug(
+                        f"Pattern merge: '{r.file.name}{r.file.ext}' "
+                        f"'{r.category}' -> '{majority}'"
+                    )
+                    r.category = majority
+                    merged_count += 1
+
+        # Pass 2: conservative ext merge — only for ext groups where every file
+        # matches a naming pattern (auto-generated files like 123.json, abc123.csv)
+        ext_groups: dict[str, list[ClassifyResult]] = {}
+        for r in llm_results:
+            ext_groups.setdefault(r.file.ext, []).append(r)
+
+        for ext, group in ext_groups.items():
+            if len(group) < 2:
+                continue
+            # Only merge if ALL files in this ext group have a naming pattern
+            if not all(file_pattern(r) for r in group):
+                continue
+            categories = Counter(r.category for r in group)
+            if len(categories) <= 1:
+                continue
+            majority = categories.most_common(1)[0][0]
+            for r in group:
+                if r.category != majority:
+                    logger.debug(
+                        f"Ext merge: '{r.file.name}{r.file.ext}' "
+                        f"'{r.category}' -> '{majority}'"
+                    )
+                    r.category = majority
+                    merged_count += 1
+
+        if merged_count > 0:
+            logger.info(f"Category merge: {merged_count} files unified")
+
+        return results
+
     def _classify_by_heuristics(self, files: list[FileItem]) -> list[ClassifyResult]:
         results: list[ClassifyResult] = []
         for f in files:
@@ -155,6 +292,9 @@ class Classifier:
 
     def _guess_category(self, file: FileItem) -> str:
         name = file.name.lower()
+
+        if len(name) <= 2 and name not in ("md", "go", "rs"):
+            return "临时文件"
 
         if any(kw in name for kw in ["invoice", "发票", "收据", "receipt"]):
             return "发票"
@@ -189,10 +329,12 @@ class Classifier:
         if any(kw in name for kw in ["readme", "说明"]):
             return "说明"
 
-        import re
         date_pattern = r"(?:20\d{2})[\-_]?(?:0[1-9]|1[0-2])[\-_]?(?:0[1-9]|[12]\d|3[01])"
         if re.search(date_pattern, name):
             return "按日期归档"
+
+        if re.fullmatch(r"\d+", name) and file.ext in (".json", ".csv", ".xlsx", ".xml"):
+            return "数据文件"
 
         if file.ext in (".pdf", ".doc", ".docx", ".txt", ".md", ".rtf"):
             return "其他文档"
@@ -238,7 +380,7 @@ class Classifier:
         return results
 
     def _map_llm_results(
-        self, files: list[FileItem], category_map: dict[str, list[str]]
+        self, files: list[FileItem], category_map: dict[str, list[str]], duration_ms: int = 0
     ) -> list[ClassifyResult]:
         file_lookup = {f.name + f.ext: f for f in files}
         results: list[ClassifyResult] = []
@@ -255,6 +397,7 @@ class Classifier:
                             confidence=0.8,
                             method="llm",
                             reason=f"LLM 分类: {category}",
+                            duration_ms=duration_ms,
                         )
                     )
                     matched_files.add(filename)
@@ -269,6 +412,7 @@ class Classifier:
                         confidence=0.5,
                         method="llm",
                         reason="LLM 未能分类",
+                        duration_ms=duration_ms,
                     )
                 )
 

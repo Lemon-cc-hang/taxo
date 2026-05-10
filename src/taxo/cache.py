@@ -130,8 +130,7 @@ class CacheManager:
         return count
 
     def _file_key(self, file: FileItem) -> str:
-        mtime = file.mtime if isinstance(file.mtime, (int, float)) else file.mtime.timestamp()
-        return f"{file.path}:{file.size}:{mtime}"
+        return str(file.path)
 
     def _dir_key(self, dir_path: Path) -> str:
         return hashlib.md5(str(dir_path.resolve()).encode()).hexdigest()[:12]

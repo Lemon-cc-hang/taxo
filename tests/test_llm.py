@@ -36,10 +36,22 @@ class TestBuildPrompt:
 
     def test_system_prompt_contains_categories(self):
         categories = ["财务", "报告", "个人"]
-        prompt = self.client._build_system_prompt(categories, "semantic")
+        prompt = self.client._build_system_prompt(categories, "hybrid")
         assert "财务" in prompt
         assert "报告" in prompt
         assert "JSON" in prompt
+
+    def test_semantic_prompt_contains_existing_dirs(self):
+        prompt = self.client._build_system_prompt([], "semantic", existing_dirs=["工作文档", "旅行照片"])
+        assert "已有子目录" in prompt
+        assert "工作文档" in prompt
+        assert "旅行照片" in prompt
+        assert "临时文件" in prompt
+
+    def test_semantic_prompt_without_existing_dirs(self):
+        prompt = self.client._build_system_prompt([], "semantic")
+        assert "工作文档" not in prompt
+        assert "临时文件" in prompt
 
     def test_user_prompt_contains_file_info(self):
         files = [make_file("Q4财务报告.pdf"), make_file("photo.jpg")]
@@ -87,9 +99,10 @@ class TestClassifyBatch:
         )
         with patch.object(client._client, "post", return_value=mock_response):
             files = [make_file("report.pdf")]
-            result = client.classify_batch(files, ["文档", "图片"], "type")
+            result, elapsed = client.classify_batch(files, ["文档", "图片"], "type")
             assert "文档" in result
             assert "report.pdf" in result["文档"]
+            assert elapsed >= 0
 
     def test_connection_error_raises_unavailable(self):
         config = LLMConfig(api_key="sk-test", max_retries=1)
@@ -117,15 +130,16 @@ class TestClassifyBatch:
 
         with patch.object(client._client, "post", side_effect=mock_post):
             files = [make_file("test.xyz")]
-            result = client.classify_batch(files, ["未分类"], "type")
+            result, elapsed = client.classify_batch(files, ["未分类"], "type")
             assert call_count == 2
             assert "未分类" in result
 
     def test_empty_files_returns_empty(self):
         config = LLMConfig(api_key="sk-test")
         client = LLMClient(config)
-        result = client.classify_batch([], ["文档"], "type")
+        result, elapsed = client.classify_batch([], ["文档"], "type")
         assert result == {}
+        assert elapsed == 0
 
     def test_api_key_in_header(self):
         config = LLMConfig(api_key="sk-test-key-123", base_url="https://api.test.com/v1")

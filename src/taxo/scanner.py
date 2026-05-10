@@ -115,3 +115,15 @@ def _split_ext(name: str) -> tuple[str, str]:
     if not stem or not ext:
         return name, ""
     return stem, f".{ext}"
+
+
+def scan_dir_structure(directory: Path) -> list[str]:
+    """Return direct subdirectory names (non-hidden) for semantic mode context."""
+    dirs = []
+    try:
+        for entry in os.scandir(directory):
+            if entry.is_dir(follow_symlinks=False) and not entry.name.startswith("."):
+                dirs.append(entry.name)
+    except (PermissionError, FileNotFoundError):
+        pass
+    return sorted(dirs)

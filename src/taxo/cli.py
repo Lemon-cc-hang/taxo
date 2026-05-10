@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import click
@@ -47,7 +48,7 @@ def cli() -> None:
 
 @cli.command()
 @click.argument("path", type=click.Path(exists=True))
-@click.option("--mode", type=click.Choice(["type", "semantic", "project", "hybrid"]), default=None, help="Classification mode")
+@click.option("--mode", type=click.Choice(["type", "hybrid", "semantic"]), default=None, help="Classification mode")
 @click.option("--output", "output_fmt", type=click.Choice(["table", "json"]), default="table", help="Output format")
 @click.option("--max-depth", type=int, default=None, help="Max scan depth")
 def scan(path: str, mode: str | None, output_fmt: str, max_depth: int | None) -> None:
@@ -65,7 +66,9 @@ def scan(path: str, mode: str | None, output_fmt: str, max_depth: int | None) ->
         return
 
     classifier = Classifier(config, _get_cache_manager(config))
+    start = time.monotonic()
     results = classifier.classify(files, source_dir=directory)
+    elapsed_ms = int((time.monotonic() - start) * 1000)
 
     if output_fmt == "json":
         import json
@@ -76,15 +79,16 @@ def scan(path: str, mode: str | None, output_fmt: str, max_depth: int | None) ->
                 "category": r.category,
                 "method": r.method,
                 "confidence": r.confidence,
+                "duration_ms": r.duration_ms,
             })
         console.print_json(json.dumps(data, ensure_ascii=False, indent=2))
     else:
-        print_scan_table(console, results)
+        print_scan_table(console, results, total_ms=elapsed_ms)
 
 
 @cli.command()
 @click.argument("path", type=click.Path(exists=True))
-@click.option("--mode", type=click.Choice(["type", "semantic", "project", "hybrid"]), default=None)
+@click.option("--mode", type=click.Choice(["type", "hybrid", "semantic"]), default=None)
 @click.option("--yes", is_flag=True, help="Skip confirmation")
 @click.option("--dry-run", is_flag=True, default=True, help="Preview only")
 @click.option("--target", type=click.Path(), default=None, help="Target directory")
@@ -106,7 +110,9 @@ def organize(path: str, mode: str | None, yes: bool, dry_run: bool, target: str 
         return
 
     classifier = Classifier(config, _get_cache_manager(config))
+    start = time.monotonic()
     results = classifier.classify(files, source_dir=directory)
+    elapsed_ms = int((time.monotonic() - start) * 1000)
 
     planner = Planner(config.organize)
     plan = planner.create_plan(results, directory)

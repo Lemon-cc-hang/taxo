@@ -11,7 +11,7 @@ from taxo.models import (
 )
 
 
-def print_scan_table(console: Console, results: list[ClassifyResult]) -> None:
+def print_scan_table(console: Console, results: list[ClassifyResult], total_ms: int = 0) -> None:
     if not results:
         console.print("[dim]No files found.[/dim]")
         return
@@ -21,23 +21,28 @@ def print_scan_table(console: Console, results: list[ClassifyResult]) -> None:
     table.add_column("Size", justify="right")
     table.add_column("Category", style="green")
     table.add_column("Method", style="yellow")
+    table.add_column("Time", justify="right", style="dim")
 
     for r in results:
         filename = r.file.name + r.file.ext
         size = _format_size(r.file.size)
-        table.add_row(filename, size, r.category, r.method)
+        time_str = f"{r.duration_ms}ms" if r.duration_ms > 0 else "-"
+        table.add_row(filename, size, r.category, r.method, time_str)
 
     console.print(table)
 
     rule_count = sum(1 for r in results if r.method == "rule")
     llm_count = sum(1 for r in results if r.method == "llm")
     uncategorized = sum(1 for r in results if r.category == "未分类")
-    console.print(
+    stats = (
         f"\nStats: {len(results)} files, "
         f"{rule_count} rule-classified, "
         f"{llm_count} llm-classified, "
         f"{uncategorized} uncategorized"
     )
+    if total_ms > 0:
+        stats += f", {total_ms / 1000:.1f}s elapsed"
+    console.print(stats)
 
 
 def print_plan_preview(console: Console, plan: Plan) -> None:
@@ -78,6 +83,7 @@ def print_history(console: Console, entries: list[HistoryEntry]) -> None:
     table.add_column("Time", style="cyan")
     table.add_column("Command")
     table.add_column("Status")
+    table.add_column("Duration", justify="right")
     table.add_column("Undo", justify="center")
 
     for e in entries:
@@ -88,10 +94,12 @@ def print_history(console: Console, entries: list[HistoryEntry]) -> None:
             else "red"
         )
         undo_str = "Y" if e.undo_available else "-"
+        duration_str = f"{e.duration_ms / 1000:.1f}s" if e.duration_ms > 0 else "-"
         table.add_row(
             time_str,
             e.command,
             f"[{status_style}]{e.status}[/{status_style}]",
+            duration_str,
             undo_str,
         )
 

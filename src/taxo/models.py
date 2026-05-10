@@ -28,6 +28,7 @@ class ClassifyResult(BaseModel):
     confidence: float
     method: Literal["rule", "llm"]
     reason: str
+    duration_ms: int = 0
 
 
 class MoveOperation(BaseModel):
@@ -79,3 +80,4 @@ class HistoryEntry(BaseModel):
     operations: list[MoveOperation]
     undo_available: bool = True
     undo_timestamp: datetime | None = None
+    duration_ms: int = 0
