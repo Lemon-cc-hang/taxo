@@ -156,7 +156,13 @@ class Classifier:
         """Shared batch runner with concurrency and per-batch logging."""
         batch_size = self._config.classify.batch_size
         max_workers = self._config.classify.max_workers
-        batches = [files[i : i + batch_size] for i in range(0, len(files), batch_size)]
+
+        # Sort by extension frequency (most common first), then by ext, then by name.
+        # This packs same-type files into the same batch, reducing cross-batch inconsistency.
+        ext_count = Counter(f.ext for f in files)
+        sorted_files = sorted(files, key=lambda f: (-ext_count[f.ext], f.ext, f.name))
+        batches = [sorted_files[i : i + batch_size] for i in range(0, len(sorted_files), batch_size)]
+
         logger.info(
             f"{label} classify: {len(files)} files, {len(batches)} batches, "
             f"batch_size={batch_size}, max_workers={max_workers}"
