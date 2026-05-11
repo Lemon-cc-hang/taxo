@@ -96,6 +96,116 @@ class TestConfigCommand:
                 result_set = runner.invoke(cli, ["config", "set", "classify.mode", "semantic"])
                 assert result_set.exit_code == 0
 
+    def test_config_init_help(self):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["config", "init", "--help"])
+        assert result.exit_code == 0
+        assert "wizard" in result.output.lower() or "init" in result.output.lower()
+
+    def test_config_edit_help(self):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["config", "edit", "--help"])
+        assert result.exit_code == 0
+        assert "editor" in result.output.lower()
+
+
+class TestConfigInitCommand:
+    def test_config_init_saves(self, tmp_path):
+        config_dir = tmp_path / ".taxo"
+        config_file = config_dir / "config.yaml"
+        runner = CliRunner()
+        with patch("taxo.config.CONFIG_DIR", config_dir), \
+             patch("taxo.config.CONFIG_FILE", config_file), \
+             patch("taxo.cli.CONFIG_DIR", config_dir), \
+             patch("taxo.cli.CONFIG_FILE", config_file):
+            result = runner.invoke(cli, ["config", "init"], input="\n\n\n\n\n")
+            assert result.exit_code == 0
+            assert config_file.exists()
+            import yaml
+            data = yaml.safe_load(config_file.read_text())
+            assert data["llm"]["api_key"] == ""
+            assert data["llm"]["base_url"] == "https://api.deepseek.com/v1"
+            assert data["llm"]["model"] == "deepseek-chat"
+            assert data["classify"]["mode"] == "hybrid"
+            assert data["organize"]["structure"] == "flat"
+
+    def test_config_init_with_custom_values(self, tmp_path):
+        config_dir = tmp_path / ".taxo"
+        config_file = config_dir / "config.yaml"
+        runner = CliRunner()
+        with patch("taxo.config.CONFIG_DIR", config_dir), \
+             patch("taxo.config.CONFIG_FILE", config_file), \
+             patch("taxo.cli.CONFIG_DIR", config_dir), \
+             patch("taxo.cli.CONFIG_FILE", config_file):
+            result = runner.invoke(cli, ["config", "init"], input="\nhttps://custom.api.com\nmy-model\nsemantic\ndate\n")
+            assert result.exit_code == 0
+            import yaml
+            data = yaml.safe_load(config_file.read_text())
+            assert data["llm"]["base_url"] == "https://custom.api.com"
+            assert data["llm"]["model"] == "my-model"
+            assert data["classify"]["mode"] == "semantic"
+            assert data["organize"]["structure"] == "date"
+
+    def test_config_init_existing_no_overwrite(self, tmp_path):
+        config_dir = tmp_path / ".taxo"
+        config_file = config_dir / "config.yaml"
+        config_dir.mkdir(parents=True)
+        config_file.write_text("existing: true")
+        runner = CliRunner()
+        with patch("taxo.config.CONFIG_DIR", config_dir), \
+             patch("taxo.config.CONFIG_FILE", config_file), \
+             patch("taxo.cli.CONFIG_DIR", config_dir), \
+             patch("taxo.cli.CONFIG_FILE", config_file):
+            result = runner.invoke(cli, ["config", "init"], input="n\n")
+            assert result.exit_code == 0
+            assert "Cancelled" in result.output
+            assert config_file.read_text() == "existing: true"
+
+    def test_config_init_existing_overwrite(self, tmp_path):
+        config_dir = tmp_path / ".taxo"
+        config_file = config_dir / "config.yaml"
+        config_dir.mkdir(parents=True)
+        config_file.write_text("existing: true")
+        runner = CliRunner()
+        with patch("taxo.config.CONFIG_DIR", config_dir), \
+             patch("taxo.config.CONFIG_FILE", config_file), \
+             patch("taxo.cli.CONFIG_DIR", config_dir), \
+             patch("taxo.cli.CONFIG_FILE", config_file):
+            result = runner.invoke(cli, ["config", "init"], input="y\n\n\n\n\n\n")
+            assert result.exit_code == 0
+            assert "saved" in result.output.lower()
+
+
+class TestConfigEditCommand:
+    def test_config_edit_creates_config_if_missing(self, tmp_path):
+        config_dir = tmp_path / ".taxo"
+        config_file = config_dir / "config.yaml"
+        runner = CliRunner()
+        with patch("taxo.config.CONFIG_DIR", config_dir), \
+             patch("taxo.config.CONFIG_FILE", config_file), \
+             patch("taxo.cli.CONFIG_DIR", config_dir), \
+             patch("taxo.cli.CONFIG_FILE", config_file), \
+             patch("click.edit") as mock_edit:
+            result = runner.invoke(cli, ["config", "edit"])
+            assert result.exit_code == 0
+            assert config_file.exists()
+            mock_edit.assert_called_once_with(filename=str(config_file))
+
+    def test_config_edit_opens_editor(self, tmp_path):
+        config_dir = tmp_path / ".taxo"
+        config_file = config_dir / "config.yaml"
+        config_dir.mkdir(parents=True)
+        config_file.write_text("llm:\n  model: test\n")
+        runner = CliRunner()
+        with patch("taxo.config.CONFIG_DIR", config_dir), \
+             patch("taxo.config.CONFIG_FILE", config_file), \
+             patch("taxo.cli.CONFIG_DIR", config_dir), \
+             patch("taxo.cli.CONFIG_FILE", config_file), \
+             patch("click.edit") as mock_edit:
+            result = runner.invoke(cli, ["config", "edit"])
+            assert result.exit_code == 0
+            mock_edit.assert_called_once_with(filename=str(config_file))
+
 
 class TestHistoryCommand:
     def test_history_empty(self, tmp_path):

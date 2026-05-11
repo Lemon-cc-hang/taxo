@@ -26,10 +26,11 @@ uv pip install -e .
 ### 初始化
 
 ```bash
-# 设置 API Key（必填）
-taxo config set llm.api_key sk-your-api-key
+# 交互式初始化（推荐）
+taxo config init
 
-# 使用其他 Provider
+# 或手动设置
+taxo config set llm.api_key sk-your-api-key
 taxo config set llm.base_url https://api.openai.com/v1
 taxo config set llm.model gpt-4o-mini
 ```
@@ -60,7 +61,6 @@ taxo history
 | `hybrid` | 规则按类型分，文档类再按语义细分（默认） | 中 |
 | `type` | 纯按文件类型分（图片/文档/视频等） | 无（纯规则） |
 | `semantic` | 所有文件走 AI 语义分类（财务/工作/个人等） | 高 |
-| `project` | AI 推断文件所属项目 | 高 |
 
 ```bash
 # 切换模式
@@ -116,6 +116,8 @@ taxo config show              # 查看当前配置
 taxo config set key value     # 设置配置
 taxo config get key            # 获取配置
 taxo config reset              # 恢复默认
+taxo config init               # 交互式初始化
+taxo config edit               # 编辑器打开配置
 ```
 
 配置文件位于 `~/.taxo/config.yaml`，参考 [config.example.yaml](config.example.yaml)。
@@ -150,8 +152,19 @@ taxo history                  # 操作历史
   --last                      # 最近一次
   --since YYYY-MM-DD          # 日期筛选
 
+taxo watch <path>              # 监控目录自动整理
+  --daemon                    # 后台守护进程
+  --stop                      # 停止守护进程
+  --status                    # 查看状态
+
 taxo config <subcommand>      # 配置管理
+  init                        # 交互式初始化
+  edit                        # 编辑器打开配置
+  show / set / get / reset    # 查看/设置/获取/重置
+
 taxo rules <subcommand>       # 规则管理
+
+taxo cost                     # 查看本月 API 成本统计
 ```
 
 ## 开发
@@ -171,7 +184,18 @@ uv run pyinstaller --onefile --name taxo --clean \
   --collect-all taxo --paths src/ src/taxo/cli.py
 ```
 
-## 成本估算
+## 成本控制
+
+```bash
+# 查看本月成本统计
+taxo cost
+
+# 设置月度预算
+taxo config set cost.monthly_budget 5.0
+
+# 超出预算时阻止调用（默认仅警告）
+taxo config set cost.over_budget_action block
+```
 
 以 DeepSeek API 为例，整理 200 个 Downloads 文件：
 

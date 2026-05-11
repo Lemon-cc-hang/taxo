@@ -232,6 +232,87 @@ class TestClassifierConcurrency:
             assert call_count == 3
 
 
+class TestClassifierProgressCallback:
+    def test_callback_invoked_during_batching(self):
+        config = TaxoConfig(
+            llm=LLMConfig(api_key="sk-test"),
+            classify=ClassifyConfig(batch_size=2),
+        )
+        classifier = Classifier(config)
+        progress_calls = []
+
+        def on_progress(done: int, total: int) -> None:
+            progress_calls.append((done, total))
+
+        def mock_classify(files, categories, mode, **kwargs):
+            return {"未分类": [f.name + f.ext for f in files]}, 100
+
+        with patch.object(classifier._llm_client, "classify_batch", side_effect=mock_classify):
+            files = [make_file(f"file{i}.xyz") for i in range(5)]
+            classifier.classify(files, progress_callback=on_progress)
+
+        assert len(progress_calls) == 3  # 5 files / batch_size 2 = 3 batches
+        # Total should be consistent
+        assert all(t == 3 for _, t in progress_calls)
+        # Done counts should be 1, 2, 3
+        assert [d for d, _ in progress_calls] == [1, 2, 3]
+
+    def test_callback_none_works(self):
+        config = TaxoConfig(
+            llm=LLMConfig(api_key="sk-test"),
+            classify=ClassifyConfig(batch_size=2),
+        )
+        classifier = Classifier(config)
+
+        def mock_classify(files, categories, mode, **kwargs):
+            return {"未分类": [f.name + f.ext for f in files]}, 100
+
+        with patch.object(classifier._llm_client, "classify_batch", side_effect=mock_classify):
+            files = [make_file(f"file{i}.xyz") for i in range(5)]
+            results = classifier.classify(files, progress_callback=None)
+            assert len(results) == 5
+
+    def test_callback_with_concurrent_batches(self):
+        config = TaxoConfig(
+            llm=LLMConfig(api_key="sk-test"),
+            classify=ClassifyConfig(batch_size=2, max_workers=3),
+        )
+        classifier = Classifier(config)
+        progress_calls = []
+
+        def on_progress(done: int, total: int) -> None:
+            progress_calls.append((done, total))
+
+        def mock_classify(files, categories, mode, **kwargs):
+            return {"未分类": [f.name + f.ext for f in files]}, 100
+
+        with patch.object(classifier._llm_client, "classify_batch", side_effect=mock_classify):
+            files = [make_file(f"file{i}.xyz") for i in range(7)]
+            classifier.classify(files, progress_callback=on_progress)
+
+        # 7 files / batch_size 2 = 4 batches
+        assert len(progress_calls) == 4
+        assert all(t == 4 for _, t in progress_calls)
+        # Done counts should be 1, 2, 3, 4 (order may vary due to concurrency)
+        assert sorted([d for d, _ in progress_calls]) == [1, 2, 3, 4]
+
+    def test_no_callback_no_crash(self):
+        """Existing callers without callback still work."""
+        config = TaxoConfig(
+            llm=LLMConfig(api_key="sk-test"),
+            classify=ClassifyConfig(batch_size=2),
+        )
+        classifier = Classifier(config)
+
+        def mock_classify(files, categories, mode, **kwargs):
+            return {"未分类": [f.name + f.ext for f in files]}, 100
+
+        with patch.object(classifier._llm_client, "classify_batch", side_effect=mock_classify):
+            files = [make_file(f"file{i}.xyz") for i in range(5)]
+            results = classifier.classify(files)
+            assert len(results) == 5
+
+
 class TestClassifierCacheOnlyLLM:
     def test_only_llm_results_cached(self, tmp_path):
         from taxo.cache import CacheManager

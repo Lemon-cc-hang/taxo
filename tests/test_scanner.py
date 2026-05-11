@@ -138,6 +138,28 @@ class TestScanFiles:
         assert f.ext == ""
 
 
+class TestScanProgressCallback:
+    def test_callback_receives_incrementing_counts(self, tmp_dir_with_files):
+        config = ScanConfig()
+        counts = []
+        results = scan_files(tmp_dir_with_files, config, progress_callback=counts.append)
+        assert len(counts) == len(results)
+        # Counts should be monotonically increasing
+        for i, c in enumerate(counts):
+            assert c == i + 1
+
+    def test_callback_none_works(self, tmp_dir_with_files):
+        config = ScanConfig()
+        results = scan_files(tmp_dir_with_files, config, progress_callback=None)
+        assert len(results) > 0
+
+    def test_callback_no_default(self, tmp_dir_with_files):
+        """Existing callers without callback still work."""
+        config = ScanConfig()
+        results = scan_files(tmp_dir_with_files, config)
+        assert len(results) > 0
+
+
 class TestScanDirStructure:
     def test_returns_subdirectory_names(self, tmp_path):
         (tmp_path / "工作文档").mkdir()

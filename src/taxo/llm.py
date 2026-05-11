@@ -4,12 +4,15 @@ import json
 import logging
 import re
 import time
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 import httpx
 
 from taxo.config import LLMConfig
 from taxo.models import FileItem
+
+if TYPE_CHECKING:
+    from taxo.cost import CostTracker
 
 logger = logging.getLogger(__name__)
 
@@ -18,9 +21,16 @@ class LLMUnavailableError(Exception):
     pass
 
 
+class BudgetExceededError(Exception):
+    """Raised when a call is blocked by cost budget enforcement."""
+
+
 class LLMClient:
-    def __init__(self, config: LLMConfig) -> None:
+    def __init__(
+        self, config: LLMConfig, cost_tracker: CostTracker | None = None
+    ) -> None:
         self._config = config
+        self._cost_tracker = cost_tracker
         self._client = httpx.Client(
             base_url=config.base_url,
             headers={
@@ -40,6 +50,15 @@ class LLMClient:
         if not files:
             return {}, 0
 
+        # Pre-call cost check
+        if self._cost_tracker:
+            # Rough estimate: ~20 tokens per file for the prompt payload
+            estimated_tokens = len(files) * 20 + 200  # 200 for system prompt overhead
+            if not self._cost_tracker.check_before_call(estimated_tokens):
+                raise BudgetExceededError(
+                    "LLM call blocked by cost budget enforcement"
+                )
+
         existing_dirs = existing_dirs or []
         system_prompt = self._build_system_prompt(categories, mode, existing_dirs)
         user_prompt = self._build_user_prompt(files, existing_dirs)
@@ -49,9 +68,20 @@ class LLMClient:
             {"role": "user", "content": user_prompt},
         ]
 
-        raw, elapsed_ms = self._call_api(messages)
+        raw, elapsed_ms, input_tokens, output_tokens = self._call_api(messages)
+
+        # Post-call cost recording
+        if self._cost_tracker and (input_tokens > 0 or output_tokens > 0):
+            cost = self._cost_tracker.record_usage(input_tokens, output_tokens)
+            logger.info(
+                f"LLM batch: {len(files)} files, {elapsed_ms}ms, "
+                f"{input_tokens}+{output_tokens} tokens, ${cost:.6f}"
+            )
+        else:
+            logger.info(f"LLM batch: {len(files)} files, {elapsed_ms}ms")
+
         result = self._parse_response(raw)
-        logger.info(f"LLM batch: {len(files)} files, {elapsed_ms}ms, {len(result)} categories")
+        logger.info(f"  -> {len(result)} categories")
         return result, elapsed_ms
 
     def _build_system_prompt(self, categories: list[str], mode: str, existing_dirs: list[str] | None = None) -> str:
@@ -107,7 +137,8 @@ class LLMClient:
         prompt = f"请分类以下文件：\n{json.dumps(file_infos, ensure_ascii=False, indent=2)}"
         return prompt
 
-    def _call_api(self, messages: list[dict]) -> tuple[str, int]:
+    def _call_api(self, messages: list[dict]) -> tuple[str, int, int, int]:
+        """Call the LLM API. Returns (content, elapsed_ms, input_tokens, output_tokens)."""
         payload = {
             "model": self._config.model,
             "messages": messages,
@@ -124,7 +155,10 @@ class LLMClient:
                 data = response.json()
                 elapsed_ms = int((time.monotonic() - start) * 1000)
                 content = data["choices"][0]["message"]["content"]
-                return content, elapsed_ms
+                usage = data.get("usage", {})
+                input_tokens = usage.get("prompt_tokens", 0)
+                output_tokens = usage.get("completion_tokens", 0)
+                return content, elapsed_ms, input_tokens, output_tokens
             except httpx.ConnectError as e:
                 elapsed_ms = int((time.monotonic() - start) * 1000)
                 raise LLMUnavailableError(f"Cannot connect to {self._config.base_url}") from e

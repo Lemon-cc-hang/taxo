@@ -21,6 +21,8 @@ class Planner:
         self,
         results: list[ClassifyResult],
         source_dir: Path,
+        total_cost: float = 0.0,
+        api_calls: int = 0,
     ) -> Plan:
         target_root = (
             Path(self._config.target_dir) if self._config.target_dir else source_dir
@@ -50,8 +52,8 @@ class Planner:
             total_files=len(results),
             total_size=sum(r.file.size for r in results),
             by_category=by_category,
-            api_calls=0,
-            estimated_cost=0.0,
+            api_calls=api_calls,
+            estimated_cost=total_cost,
             duration_ms=0,
         )
 

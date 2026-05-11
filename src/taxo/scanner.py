@@ -4,6 +4,7 @@ import fnmatch
 import os
 import unicodedata
 from pathlib import Path
+from typing import Callable
 
 from taxo.config import ScanConfig
 from taxo.models import FileItem
@@ -23,14 +24,18 @@ SYSTEM_DIR_PREFIXES = (
 )
 
 
-def scan_files(directory: Path, config: ScanConfig) -> list[FileItem]:
+def scan_files(
+    directory: Path,
+    config: ScanConfig,
+    progress_callback: Callable[[int], None] | None = None,
+) -> list[FileItem]:
     if not directory.exists():
         raise FileNotFoundError(f"Directory not found: {directory}")
     if not directory.is_dir():
         raise NotADirectoryError(f"Not a directory: {directory}")
 
     results: list[FileItem] = []
-    _scan_recursive(directory, directory, config, 0, results)
+    _scan_recursive(directory, directory, config, 0, results, progress_callback)
     return results
 
 
@@ -40,6 +45,7 @@ def _scan_recursive(
     config: ScanConfig,
     depth: int,
     results: list[FileItem],
+    progress_callback: Callable[[int], None] | None = None,
 ) -> None:
     if config.max_depth is not None and depth > config.max_depth:
         return
@@ -58,7 +64,7 @@ def _scan_recursive(
         if entry.is_dir(follow_symlinks=False):
             if _should_skip_dir(name, config):
                 continue
-            _scan_recursive(root, Path(entry.path), config, depth + 1, results)
+            _scan_recursive(root, Path(entry.path), config, depth + 1, results, progress_callback)
             continue
 
         if not entry.is_file(follow_symlinks=False):
@@ -88,6 +94,9 @@ def _scan_recursive(
                 is_symlink=False,
             )
         )
+
+        if progress_callback:
+            progress_callback(len(results))
 
 
 def _should_skip_dir(name: str, config: ScanConfig) -> bool:

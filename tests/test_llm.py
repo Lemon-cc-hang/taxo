@@ -1,14 +1,15 @@
 import json
 import pytest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 from datetime import datetime
 from pathlib import Path
 
 import httpx
 
-from taxo.config import LLMConfig
+from taxo.config import LLMConfig, CostConfig
 from taxo.models import FileItem
-from taxo.llm import LLMClient, LLMUnavailableError
+from taxo.llm import LLMClient, LLMUnavailableError, BudgetExceededError
+from taxo.cost import CostTracker
 
 
 def make_file(name: str) -> FileItem:
@@ -26,6 +27,19 @@ def make_file(name: str) -> FileItem:
         ctime=datetime(2026, 5, 1, 12, 0, 0),
         is_hidden=False,
         is_symlink=False,
+    )
+
+
+def _make_response(content: dict, usage: dict | None = None) -> httpx.Response:
+    payload = {
+        "choices": [{"message": {"content": json.dumps(content)}}],
+    }
+    if usage is not None:
+        payload["usage"] = usage
+    return httpx.Response(
+        200,
+        json=payload,
+        request=httpx.Request("POST", "https://api.example.com/v1/chat/completions"),
     )
 
 
@@ -92,10 +106,9 @@ class TestClassifyBatch:
     def test_successful_classification(self):
         config = LLMConfig(api_key="sk-test")
         client = LLMClient(config)
-        mock_response = httpx.Response(
-            200,
-            json={"choices": [{"message": {"content": json.dumps({"categories": {"文档": ["report.pdf"]}, "uncategorized": []})}}]},
-            request=httpx.Request("POST", "https://api.example.com/v1/chat/completions"),
+        mock_response = _make_response(
+            {"categories": {"文档": ["report.pdf"]}, "uncategorized": []},
+            usage={"prompt_tokens": 150, "completion_tokens": 80},
         )
         with patch.object(client._client, "post", return_value=mock_response):
             files = [make_file("report.pdf")]
@@ -122,10 +135,9 @@ class TestClassifyBatch:
             call_count += 1
             if call_count < 2:
                 raise httpx.TimeoutException("timeout")
-            return httpx.Response(
-                200,
-                json={"choices": [{"message": {"content": json.dumps({"categories": {"未分类": ["test.xyz"]}, "uncategorized": []})}}]},
-                request=httpx.Request("POST", "https://api.example.com/v1/chat/completions"),
+            return _make_response(
+                {"categories": {"未分类": ["test.xyz"]}, "uncategorized": []},
+                usage={"prompt_tokens": 50, "completion_tokens": 20},
             )
 
         with patch.object(client._client, "post", side_effect=mock_post):
@@ -145,3 +157,84 @@ class TestClassifyBatch:
         config = LLMConfig(api_key="sk-test-key-123", base_url="https://api.test.com/v1")
         client = LLMClient(config)
         assert client._client.headers["Authorization"] == "Bearer sk-test-key-123"
+
+    def test_response_without_usage_field(self):
+        config = LLMConfig(api_key="sk-test")
+        client = LLMClient(config)
+        mock_response = _make_response(
+            {"categories": {"文档": ["report.pdf"]}, "uncategorized": []},
+            usage=None,
+        )
+        with patch.object(client._client, "post", return_value=mock_response):
+            files = [make_file("report.pdf")]
+            result, elapsed = client.classify_batch(files, ["文档"], "type")
+            assert "文档" in result
+
+
+class TestCostTracking:
+    def test_cost_tracker_records_usage(self, tmp_path: Path):
+        cost_file = tmp_path / "cost.jsonl"
+        config = LLMConfig(api_key="sk-test")
+        tracker = CostTracker(CostConfig(), cost_file)
+        client = LLMClient(config, cost_tracker=tracker)
+
+        mock_response = _make_response(
+            {"categories": {"文档": ["report.pdf"]}, "uncategorized": []},
+            usage={"prompt_tokens": 1500, "completion_tokens": 800},
+        )
+        with patch.object(client._client, "post", return_value=mock_response):
+            files = [make_file("report.pdf")]
+            client.classify_batch(files, ["文档"], "type")
+
+        assert cost_file.exists()
+        lines = cost_file.read_text().strip().splitlines()
+        assert len(lines) == 1
+        entry = json.loads(lines[0])
+        assert entry["input_tokens"] == 1500
+        assert entry["output_tokens"] == 800
+        assert entry["cost"] > 0
+
+    def test_budget_exceeded_blocks_call(self, tmp_path: Path):
+        cost_file = tmp_path / "cost.jsonl"
+        config = LLMConfig(api_key="sk-test")
+        tracker = CostTracker(
+            CostConfig(monthly_budget=0.001, max_cost_per_call=0.0001, over_budget_action="block"),
+            cost_file,
+        )
+        client = LLMClient(config, cost_tracker=tracker)
+
+        mock_response = _make_response(
+            {"categories": {"文档": ["report.pdf"]}, "uncategorized": []},
+            usage={"prompt_tokens": 1500, "completion_tokens": 800},
+        )
+        with patch.object(client._client, "post", return_value=mock_response):
+            files = [make_file("report.pdf")]
+            with pytest.raises(BudgetExceededError):
+                client.classify_batch(files, ["文档"], "type")
+
+    def test_no_cost_tracker_works_as_before(self):
+        config = LLMConfig(api_key="sk-test")
+        client = LLMClient(config)
+        mock_response = _make_response(
+            {"categories": {"文档": ["report.pdf"]}, "uncategorized": []},
+            usage={"prompt_tokens": 100, "completion_tokens": 50},
+        )
+        with patch.object(client._client, "post", return_value=mock_response):
+            files = [make_file("report.pdf")]
+            result, elapsed = client.classify_batch(files, ["文档"], "type")
+            assert "文档" in result
+
+    def test_call_api_returns_token_counts(self):
+        config = LLMConfig(api_key="sk-test")
+        client = LLMClient(config)
+        mock_response = _make_response(
+            {"categories": {"docs": ["a.pdf"]}, "uncategorized": []},
+            usage={"prompt_tokens": 200, "completion_tokens": 100},
+        )
+        with patch.object(client._client, "post", return_value=mock_response):
+            content, elapsed, in_tok, out_tok = client._call_api(
+                [{"role": "user", "content": "test"}]
+            )
+            assert in_tok == 200
+            assert out_tok == 100
+            assert "docs" in content

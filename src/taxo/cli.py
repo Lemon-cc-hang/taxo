@@ -5,19 +5,24 @@ from pathlib import Path
 
 import click
 from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TaskProgressColumn
 
 from taxo import __version__
 from taxo.cache import CacheManager
 from taxo.classifier import Classifier
-from taxo.config import TaxoConfig, load_config, save_config, CONFIG_DIR
+from taxo.config import TaxoConfig, load_config, save_config, CONFIG_DIR, CONFIG_FILE, get_default_config
 from taxo.display import print_execute_result, print_history, print_plan_preview, print_scan_table
 from taxo.executor import Executor
 from taxo.history import HistoryManager
 from taxo.planner import Planner
 from taxo.rules import BUILTIN_RULES
 from taxo.scanner import scan_files
+from taxo.watcher import start_watcher, start_daemon, stop_daemon, get_daemon_status
+
+import logging
 
 console = Console()
+logger = logging.getLogger(__name__)
 
 
 def _get_config() -> TaxoConfig:
@@ -60,15 +65,54 @@ def scan(path: str, mode: str | None, output_fmt: str, max_depth: int | None) ->
         config.scan.max_depth = max_depth
 
     directory = Path(path)
-    files = scan_files(directory, config.scan)
-    if not files:
-        console.print("[dim]No files found.[/dim]")
-        return
 
-    classifier = Classifier(config, _get_cache_manager(config))
-    start = time.monotonic()
-    results = classifier.classify(files, source_dir=directory)
-    elapsed_ms = int((time.monotonic() - start) * 1000)
+    # Build progress callbacks only when output is a terminal
+    scan_callback = None
+    classify_callback = None
+    progress_ctx = None
+
+    if console.is_terminal:
+        progress_ctx = Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=console,
+        )
+
+    if progress_ctx:
+        with progress_ctx as progress:
+            scan_task = progress.add_task("Scanning files...", total=None)
+
+            def on_scan(count: int) -> None:
+                progress.update(scan_task, completed=count)
+
+            files = scan_files(directory, config.scan, progress_callback=on_scan)
+            progress.update(scan_task, total=len(files), completed=len(files))
+
+            if not files:
+                console.print("[dim]No files found.[/dim]")
+                return
+
+            classifier = Classifier(config, _get_cache_manager(config))
+            classify_task = progress.add_task("Classifying...", total=None)
+
+            def on_classify(done: int, total: int) -> None:
+                progress.update(classify_task, total=total, completed=done)
+
+            start = time.monotonic()
+            results = classifier.classify(files, source_dir=directory, progress_callback=on_classify)
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            progress.update(classify_task, total=len(results), completed=len(results))
+    else:
+        files = scan_files(directory, config.scan)
+        if not files:
+            console.print("[dim]No files found.[/dim]")
+            return
+        classifier = Classifier(config, _get_cache_manager(config))
+        start = time.monotonic()
+        results = classifier.classify(files, source_dir=directory)
+        elapsed_ms = int((time.monotonic() - start) * 1000)
 
     if output_fmt == "json":
         import json
@@ -104,15 +148,53 @@ def organize(path: str, mode: str | None, yes: bool, dry_run: bool, target: str 
         config.organize.conflict_strategy = conflict_strategy
 
     directory = Path(path)
-    files = scan_files(directory, config.scan)
-    if not files:
-        console.print("[dim]No files found.[/dim]")
-        return
 
-    classifier = Classifier(config, _get_cache_manager(config))
-    start = time.monotonic()
-    results = classifier.classify(files, source_dir=directory)
-    elapsed_ms = int((time.monotonic() - start) * 1000)
+    scan_callback = None
+    classify_callback = None
+    progress_ctx = None
+
+    if console.is_terminal:
+        progress_ctx = Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=console,
+        )
+
+    if progress_ctx:
+        with progress_ctx as progress:
+            scan_task = progress.add_task("Scanning files...", total=None)
+
+            def on_scan(count: int) -> None:
+                progress.update(scan_task, completed=count)
+
+            files = scan_files(directory, config.scan, progress_callback=on_scan)
+            progress.update(scan_task, total=len(files), completed=len(files))
+
+            if not files:
+                console.print("[dim]No files found.[/dim]")
+                return
+
+            classifier = Classifier(config, _get_cache_manager(config))
+            classify_task = progress.add_task("Classifying...", total=None)
+
+            def on_classify(done: int, total: int) -> None:
+                progress.update(classify_task, total=total, completed=done)
+
+            start = time.monotonic()
+            results = classifier.classify(files, source_dir=directory, progress_callback=on_classify)
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            progress.update(classify_task, total=len(results), completed=len(results))
+    else:
+        files = scan_files(directory, config.scan)
+        if not files:
+            console.print("[dim]No files found.[/dim]")
+            return
+        classifier = Classifier(config, _get_cache_manager(config))
+        start = time.monotonic()
+        results = classifier.classify(files, source_dir=directory)
+        elapsed_ms = int((time.monotonic() - start) * 1000)
 
     planner = Planner(config.organize)
     plan = planner.create_plan(results, directory)
@@ -184,6 +266,54 @@ def history_cmd(show_last: bool, since: str | None) -> None:
     print_history(console, entries)
 
 
+def _organize_callback(directory: Path) -> None:
+    """Callback for watcher: classify and organize files in a directory."""
+    config = _get_config()
+    files = scan_files(directory, config.scan)
+    if not files:
+        return
+    classifier = Classifier(config, _get_cache_manager(config))
+    results = classifier.classify(files, source_dir=directory)
+    planner = Planner(config.organize)
+    plan = planner.create_plan(results, directory)
+    hm = _get_history_manager(config)
+    executor = Executor(hm, move_workers=config.organize.move_workers)
+    result = executor.execute(plan, dry_run=False)
+    logger.info(f"Auto-organized: {result.success} files moved, {result.failed} failed")
+
+
+@cli.command()
+@click.argument("path", required=False, type=click.Path(exists=True))
+@click.option("--daemon", is_flag=True, help="Run as background daemon")
+@click.option("--stop", "stop_flag", is_flag=True, help="Stop the running daemon")
+@click.option("--status", "status_flag", is_flag=True, help="Check daemon status")
+def watch(path: str | None, daemon: bool, stop_flag: bool, status_flag: bool) -> None:
+    """Watch a directory for new files and auto-organize them."""
+    if stop_flag:
+        stop_daemon()
+        return
+
+    if status_flag:
+        status = get_daemon_status()
+        console.print(f"Watcher status: {status}")
+        return
+
+    if path is None:
+        console.print("[red]Error: PATH is required unless using --stop or --status.[/red]")
+        raise SystemExit(1)
+
+    directory = Path(path)
+    config = _get_config()
+    debounce = config.watch.debounce_seconds
+    delay = config.watch.delay_seconds
+
+    if daemon:
+        start_daemon(directory, _organize_callback, debounce_seconds=debounce, delay_seconds=delay)
+    else:
+        console.print(f"[bold]Watching {directory} for new files...[/bold] (Ctrl+C to stop)")
+        start_watcher(directory, _organize_callback, debounce_seconds=debounce, delay_seconds=delay)
+
+
 @cli.group()
 def config() -> None:
     """Manage configuration."""
@@ -243,9 +373,47 @@ def config_get(key: str) -> None:
 @config.command("reset")
 def config_reset() -> None:
     """Reset configuration to defaults."""
-    from taxo.config import get_default_config
     save_config(get_default_config())
     console.print("[green]Configuration reset to defaults.[/green]")
+
+
+@config.command("init")
+def config_init() -> None:
+    """Interactive configuration wizard."""
+    console.print("[bold]Taxo Configuration Wizard[/bold]\n")
+
+    if CONFIG_FILE.exists():
+        if not click.confirm("Config file exists. Overwrite?", default=False):
+            console.print("[dim]Cancelled.[/dim]")
+            return
+
+    defaults = get_default_config()
+
+    api_key = click.prompt("API Key (press Enter to skip)", default="", hide_input=True, show_default=False)
+    base_url = click.prompt("API Base URL", default=defaults.llm.base_url)
+    model = click.prompt("Model", default=defaults.llm.model)
+    mode = click.prompt("Classification mode (type/hybrid/semantic)", default=defaults.classify.mode)
+    structure = click.prompt("Directory structure (flat/date)", default=defaults.organize.structure)
+
+    cfg = get_default_config()
+    cfg.llm.api_key = api_key
+    cfg.llm.base_url = base_url
+    cfg.llm.model = model
+    cfg.classify.mode = mode
+    cfg.organize.structure = structure
+
+    save_config(cfg)
+    console.print(f"\n[green]Configuration saved to {CONFIG_FILE}[/green]")
+
+
+@config.command("edit")
+def config_edit() -> None:
+    """Open configuration file in editor."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    if not CONFIG_FILE.exists():
+        save_config(get_default_config())
+
+    click.edit(filename=str(CONFIG_FILE))
 
 
 @cli.group()
@@ -291,6 +459,26 @@ def rules_remove(index: int) -> None:
         console.print(f"[green]Removed rule: {removed['pattern']} -> {removed['category']}[/green]")
     else:
         console.print(f"[red]Invalid index: {index}. Use 'taxo rules list' to see available rules.[/red]")
+
+
+@cli.command("cost")
+def cost_cmd() -> None:
+    """Show monthly LLM API cost statistics."""
+    from taxo.cost import CostTracker
+
+    config = _get_config()
+    tracker = CostTracker(config.cost)
+    stats = tracker.get_stats()
+
+    console.print("[bold]Monthly Cost Report[/bold]\n")
+    console.print(f"  Month spend:       ${stats['monthly_spend']:.6f}")
+    console.print(f"  Monthly budget:    ${stats['monthly_budget']:.2f}")
+    console.print(f"  Budget remaining:  ${stats['budget_remaining']:.6f}")
+    console.print(f"  Total API calls:   {stats['total_calls']}")
+    console.print(f"  Input tokens:      {stats['total_input_tokens']:,}")
+    console.print(f"  Output tokens:     {stats['total_output_tokens']:,}")
+    console.print(f"  Max cost/call:     ${stats['max_cost_per_call']:.6f}")
+    console.print(f"  Over-budget action: {stats['over_budget_action']}")
 
 
 @cli.group()

@@ -10,8 +10,10 @@ from typing import Any
 
 from taxo.cache import CacheManager
 from taxo.config import TaxoConfig
-from taxo.llm import LLMClient, LLMUnavailableError
+from taxo.cost import CostTracker
+from taxo.llm import LLMClient, LLMUnavailableError, BudgetExceededError
 from taxo.models import ClassifyResult, FileItem
+from typing import Callable
 from taxo.rules import RuleEngine
 
 logger = logging.getLogger(__name__)
@@ -21,27 +23,38 @@ class Classifier:
     def __init__(self, config: TaxoConfig, cache: CacheManager | None = None) -> None:
         self._config = config
         self._rule_engine = RuleEngine(config.rules)
-        self._llm_client = LLMClient(config.llm) if config.llm.api_key else None
+        self._cost_tracker: CostTracker | None = None
+        if config.llm.api_key:
+            self._cost_tracker = CostTracker(config.cost)
+            self._llm_client = LLMClient(config.llm, cost_tracker=self._cost_tracker)
+        else:
+            self._llm_client = None
         self._cache = cache
 
     def classify(
-        self, files: list[FileItem], source_dir: Path | None = None
+        self,
+        files: list[FileItem],
+        source_dir: Path | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> list[ClassifyResult]:
         if not files:
             return []
 
         if self._cache and source_dir:
-            return self._classify_with_cache(files, source_dir)
+            return self._classify_with_cache(files, source_dir, progress_callback)
 
         if self._config.classify.mode == "type":
             return self._classify_type(files)
         if self._config.classify.mode == "semantic":
-            return self._classify_semantic(files)
+            return self._classify_semantic(files, progress_callback)
 
-        return self._classify_hybrid(files)
+        return self._classify_hybrid(files, progress_callback)
 
     def _classify_with_cache(
-        self, files: list[FileItem], source_dir: Path
+        self,
+        files: list[FileItem],
+        source_dir: Path,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> list[ClassifyResult]:
         self._cache.load(source_dir)
 
@@ -60,10 +73,10 @@ class Classifier:
             if self._config.classify.mode == "type":
                 new_results = self._classify_type(missed_files)
             elif self._config.classify.mode == "semantic":
-                new_results = self._classify_semantic_no_cache(missed_files)
+                new_results = self._classify_semantic_no_cache(missed_files, progress_callback)
                 use_merge = True
             else:
-                new_results = self._classify_hybrid(missed_files)
+                new_results = self._classify_hybrid(missed_files, progress_callback)
 
             cached_results.extend(new_results)
 
@@ -83,7 +96,11 @@ class Classifier:
 
         return cached_results
 
-    def _classify_hybrid(self, files: list[FileItem]) -> list[ClassifyResult]:
+    def _classify_hybrid(
+        self,
+        files: list[FileItem],
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> list[ClassifyResult]:
         matched, unmatched = self._rule_engine.classify(files)
         results = self._build_rule_results(matched)
 
@@ -93,7 +110,7 @@ class Classifier:
 
         if unmatched:
             if self._llm_client:
-                results.extend(self._classify_with_llm(unmatched))
+                results.extend(self._classify_with_llm(unmatched, progress_callback))
             else:
                 results.extend(self._classify_by_heuristics(unmatched))
 
@@ -121,15 +138,23 @@ class Classifier:
 
         return keep + refined
 
-    def _classify_semantic(self, files: list[FileItem]) -> list[ClassifyResult]:
+    def _classify_semantic(
+        self,
+        files: list[FileItem],
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> list[ClassifyResult]:
         """Semantic mode entry point (cache not involved)."""
-        results = self._classify_semantic_no_cache(files)
+        results = self._classify_semantic_no_cache(files, progress_callback)
         return self._merge_categories(results)
 
-    def _classify_semantic_no_cache(self, files: list[FileItem]) -> list[ClassifyResult]:
+    def _classify_semantic_no_cache(
+        self,
+        files: list[FileItem],
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> list[ClassifyResult]:
         """Semantic mode core logic, reusable from cache path."""
         if not self._llm_client:
-            return self._classify_hybrid(files)
+            return self._classify_hybrid(files, progress_callback)
 
         from taxo.scanner import scan_dir_structure
 
@@ -137,25 +162,32 @@ class Classifier:
         existing_dirs = scan_dir_structure(source_dir) if source_dir else []
 
         return self._run_llm_batches(
-            files, existing_dirs=existing_dirs, label="Semantic"
+            files, existing_dirs=existing_dirs, label="Semantic",
+            progress_callback=progress_callback,
         )
 
-    def _classify_with_llm(self, files: list[FileItem]) -> list[ClassifyResult]:
+    def _classify_with_llm(
+        self,
+        files: list[FileItem],
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> list[ClassifyResult]:
         """LLM classification for hybrid mode — no global merge."""
         if not self._llm_client:
             return self._classify_by_heuristics(files)
 
-        return self._run_llm_batches(files, label="LLM")
+        return self._run_llm_batches(files, label="LLM", progress_callback=progress_callback)
 
     def _run_llm_batches(
         self,
         files: list[FileItem],
         existing_dirs: list[str] | None = None,
         label: str = "LLM",
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> list[ClassifyResult]:
         """Shared batch runner with concurrency and per-batch logging."""
         batch_size = self._config.classify.batch_size
         max_workers = self._config.classify.max_workers
+        total_batches = (len(files) + batch_size - 1) // batch_size if files else 0
 
         # Sort by extension frequency (most common first), then by ext, then by name.
         # This packs same-type files into the same batch, reducing cross-batch inconsistency.
@@ -180,21 +212,28 @@ class Classifier:
                 batch_ms = int((time.monotonic() - batch_start) * 1000)
                 logger.info(f"Batch done: {len(batch)} files, api={api_ms}ms, total={batch_ms}ms")
                 return self._map_llm_results(batch, category_map, api_ms)
-            except LLMUnavailableError:
-                logger.warning("LLM unavailable, falling back to heuristic classification")
+            except (LLMUnavailableError, BudgetExceededError) as exc:
+                logger.warning(f"LLM unavailable ({type(exc).__name__}), falling back to heuristic classification")
                 return self._classify_by_heuristics(batch)
 
         results: list[ClassifyResult] = []
+        completed_count = 0
 
         if len(batches) <= 1 or max_workers <= 1:
             for batch in batches:
                 results.extend(classify_one(batch))
+                if progress_callback:
+                    completed_count += 1
+                    progress_callback(completed_count, total_batches)
         else:
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
                 futures = {pool.submit(classify_one, b): i for i, b in enumerate(batches)}
                 ordered: list[list[ClassifyResult] | None] = [None] * len(batches)
                 for future in as_completed(futures):
                     ordered[futures[future]] = future.result()
+                    if progress_callback:
+                        completed_count += 1
+                        progress_callback(completed_count, total_batches)
             for batch_results in ordered:
                 if batch_results:
                     results.extend(batch_results)
