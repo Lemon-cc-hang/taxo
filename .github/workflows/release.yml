@@ -15,8 +15,6 @@ jobs:
         include:
           - os: macos-latest
             target: macos-arm64
-          - os: macos-13
-            target: macos-x86_64
           - os: ubuntu-latest
             target: linux-x86_64
           - os: windows-latest
@@ -63,7 +61,6 @@ jobs:
         run: |
           mkdir -p release
           cp artifacts/taxo-macos-arm64/taxo release/taxo-macos-arm64
-          cp artifacts/taxo-macos-x86_64/taxo release/taxo-macos-x86_64
           cp artifacts/taxo-linux-x86_64/taxo release/taxo-linux-x86_64
           cp artifacts/taxo-windows-x86_64/taxo.exe release/taxo-windows-x86_64.exe
           chmod +x release/taxo-*
