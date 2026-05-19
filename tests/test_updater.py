@@ -1,9 +1,20 @@
 """Tests for taxo.updater — auto-update system."""
+import json
+import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from taxo.updater import compare_versions, get_current_version, get_platform_asset_name, is_frozen, PLATFORM_MAP
+from taxo.updater import (
+    CACHE_TTL_SECONDS,
+    UpdateCache,
+    compare_versions,
+    get_current_version,
+    get_platform_asset_name,
+    is_frozen,
+    PLATFORM_MAP,
+)
 
 
 class TestCompareVersions:
@@ -83,3 +94,48 @@ class TestPlatformAssetName:
 
     def test_platform_map_has_three_entries(self):
         assert len(PLATFORM_MAP) == 3
+
+
+class TestUpdateCache:
+    def test_cache_file_created_on_save(self, tmp_path: Path):
+        cache = UpdateCache(cache_dir=tmp_path)
+        cache.save("0.3.0", "https://example.com/taxo-macos-arm64", "taxo-macos-arm64")
+        assert (tmp_path / "update_cache.json").exists()
+
+    def test_cache_roundtrip(self, tmp_path: Path):
+        cache = UpdateCache(cache_dir=tmp_path)
+        cache.save("0.3.0", "https://example.com/taxo-macos-arm64", "taxo-macos-arm64")
+        info = cache.load()
+        assert info is not None
+        assert info["latest_version"] == "0.3.0"
+        assert info["download_url"] == "https://example.com/taxo-macos-arm64"
+        assert info["asset_name"] == "taxo-macos-arm64"
+
+    def test_cache_is_stale_when_no_file(self, tmp_path: Path):
+        cache = UpdateCache(cache_dir=tmp_path)
+        assert cache.is_stale() is True
+
+    def test_cache_is_fresh_within_ttl(self, tmp_path: Path):
+        cache = UpdateCache(cache_dir=tmp_path)
+        cache.save("0.3.0", "https://example.com/taxo", "taxo-macos-arm64")
+        assert cache.is_stale() is False
+
+    def test_cache_is_stale_after_ttl(self, tmp_path: Path):
+        cache = UpdateCache(cache_dir=tmp_path)
+        cache.save("0.3.0", "https://example.com/taxo", "taxo-macos-arm64")
+        # Manually backdate the cache
+        cache_file = tmp_path / "update_cache.json"
+        data = json.loads(cache_file.read_text())
+        data["last_check"] = time.strftime(
+            "%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - CACHE_TTL_SECONDS - 100)
+        )
+        cache_file.write_text(json.dumps(data))
+        assert cache.is_stale() is True
+
+    def test_cache_load_returns_none_on_corrupt_file(self, tmp_path: Path):
+        cache = UpdateCache(cache_dir=tmp_path)
+        (tmp_path / "update_cache.json").write_text("not json")
+        assert cache.load() is None
+
+    def test_cache_ttl_is_24_hours(self):
+        assert CACHE_TTL_SECONDS == 86400
