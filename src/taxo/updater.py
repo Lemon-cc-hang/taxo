@@ -49,10 +49,10 @@ def compare_versions(current: str, latest: str) -> Literal[-1, 0, 1] | None:
     c_parts.extend([0] * (max_len - len(c_parts)))
     l_parts.extend([0] * (max_len - len(l_parts)))
 
-    for c, l in zip(c_parts, l_parts):
-        if c < l:
+    for cur, lat in zip(c_parts, l_parts):
+        if cur < lat:
             return -1
-        if c > l:
+        if cur > lat:
             return 1
     return 0
 
