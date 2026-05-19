@@ -5,6 +5,7 @@ the binary (or runs pip upgrade) when an update is available.
 """
 from __future__ import annotations
 
+import platform as _platform
 import sys
 from typing import Literal
 
@@ -43,3 +44,16 @@ def compare_versions(current: str, latest: str) -> Literal[-1, 0, 1] | None:
         if c > l:
             return 1
     return 0
+
+
+PLATFORM_MAP: dict[tuple[str, str], str] = {
+    ("Darwin", "arm64"): "taxo-macos-arm64",
+    ("Linux", "x86_64"): "taxo-linux-x86_64",
+    ("Windows", "AMD64"): "taxo-windows-x86_64.exe",
+}
+
+
+def get_platform_asset_name() -> str | None:
+    """Return the release asset name for the current platform, or None if unsupported."""
+    key = (_platform.system(), _platform.machine())
+    return PLATFORM_MAP.get(key)

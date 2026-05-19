@@ -1,7 +1,9 @@
 """Tests for taxo.updater — auto-update system."""
+from unittest.mock import patch
+
 import pytest
 
-from taxo.updater import compare_versions, get_current_version, is_frozen
+from taxo.updater import compare_versions, get_current_version, get_platform_asset_name, is_frozen, PLATFORM_MAP
 
 
 class TestCompareVersions:
@@ -52,3 +54,32 @@ class TestIsFrozen:
     def test_not_frozen_in_test_env(self):
         # Tests run via pytest, not PyInstaller
         assert is_frozen() is False
+
+
+class TestPlatformAssetName:
+    def test_macos_arm64(self):
+        with patch("taxo.updater._platform") as mock_plat:
+            mock_plat.system.return_value = "Darwin"
+            mock_plat.machine.return_value = "arm64"
+            assert get_platform_asset_name() == "taxo-macos-arm64"
+
+    def test_linux_x86_64(self):
+        with patch("taxo.updater._platform") as mock_plat:
+            mock_plat.system.return_value = "Linux"
+            mock_plat.machine.return_value = "x86_64"
+            assert get_platform_asset_name() == "taxo-linux-x86_64"
+
+    def test_windows_x86_64(self):
+        with patch("taxo.updater._platform") as mock_plat:
+            mock_plat.system.return_value = "Windows"
+            mock_plat.machine.return_value = "AMD64"
+            assert get_platform_asset_name() == "taxo-windows-x86_64.exe"
+
+    def test_unsupported_platform_returns_none(self):
+        with patch("taxo.updater._platform") as mock_plat:
+            mock_plat.system.return_value = "FreeBSD"
+            mock_plat.machine.return_value = "x86_64"
+            assert get_platform_asset_name() is None
+
+    def test_platform_map_has_three_entries(self):
+        assert len(PLATFORM_MAP) == 3
