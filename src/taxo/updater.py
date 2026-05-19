@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import platform as _platform
+import stat
 import sys
 import time
 from pathlib import Path
@@ -184,3 +186,53 @@ def check_for_update_hint(
     except Exception as e:
         logger.debug("Update hint check failed: %s", e)
         return None
+
+
+def download_and_replace(
+    url: str,
+    current_binary: str,
+    cache_dir: Path | None = None,
+) -> None:
+    """Download new binary and atomically replace the current one.
+
+    Args:
+        url: Download URL for the new binary.
+        current_binary: Path to the current binary to replace.
+        cache_dir: Directory for temp files (default: ~/.taxo).
+
+    Raises:
+        httpx.HTTPError: On download failure.
+        OSError: On file replacement failure.
+    """
+    cache_dir = cache_dir or Path.home() / ".taxo"
+    tmp_dir = cache_dir / "tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = tmp_dir / "taxo-new"
+
+    try:
+        with httpx.Client(timeout=60.0) as client:
+            with client.stream("GET", url, follow_redirects=True) as resp:
+                resp.raise_for_status()
+                with open(tmp_path, "wb") as f:
+                    for chunk in resp.iter_bytes():
+                        f.write(chunk)
+
+        # Set executable permission before rename
+        os.chmod(tmp_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP)
+
+        # Atomic replace (POSIX)
+        os.rename(tmp_path, current_binary)
+
+        logger.info("Updated binary: %s", current_binary)
+    except Exception:
+        # Clean up temp file on any failure
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
+    finally:
+        # Clean up temp dir
+        if tmp_dir.exists():
+            try:
+                tmp_dir.rmdir()
+            except OSError:
+                pass  # Directory not empty or other issue, leave it

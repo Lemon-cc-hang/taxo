@@ -1,5 +1,6 @@
 """Tests for taxo.updater — auto-update system."""
 import json
+import stat
 import time
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -14,6 +15,7 @@ from taxo.updater import (
     check_for_update_hint,
     check_latest_release,
     compare_versions,
+    download_and_replace,
     get_current_version,
     get_platform_asset_name,
     is_frozen,
@@ -259,3 +261,88 @@ class TestCheckForUpdateHint:
             assert "0.3.0" in result
             # Cache should now be populated
             assert cache.is_stale() is False
+
+
+class TestDownloadAndReplace:
+    def test_downloads_to_temp_and_replaces(self, tmp_path: Path):
+        # Create a fake "current binary"
+        current_binary = tmp_path / "taxo"
+        current_binary.write_text("old binary")
+
+        # Mock httpx to return fake binary content
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.iter_bytes.return_value = [b"new binary content"]
+        mock_response.headers = {"content-length": "20"}
+
+        # Mock the stream context manager
+        mock_stream_cm = MagicMock()
+        mock_stream_cm.__enter__ = MagicMock(return_value=mock_response)
+        mock_stream_cm.__exit__ = MagicMock(return_value=False)
+
+        with patch("taxo.updater.httpx.Client") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client.stream.return_value = mock_stream_cm
+            mock_client.__enter__ = MagicMock(return_value=mock_client)
+            mock_client.__exit__ = MagicMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            download_and_replace(
+                url="https://example.com/taxo-macos-arm64",
+                current_binary=str(current_binary),
+                cache_dir=tmp_path / ".taxo",
+            )
+
+        # Binary should be replaced
+        assert current_binary.read_text() == "new binary content"
+
+    def test_sets_executable_permission(self, tmp_path: Path):
+        current_binary = tmp_path / "taxo"
+        current_binary.write_text("old")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.iter_bytes.return_value = [b"new"]
+        mock_response.headers = {"content-length": "3"}
+
+        mock_stream_cm = MagicMock()
+        mock_stream_cm.__enter__ = MagicMock(return_value=mock_response)
+        mock_stream_cm.__exit__ = MagicMock(return_value=False)
+
+        with patch("taxo.updater.httpx.Client") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client.stream.return_value = mock_stream_cm
+            mock_client.__enter__ = MagicMock(return_value=mock_client)
+            mock_client.__exit__ = MagicMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            download_and_replace(
+                url="https://example.com/taxo",
+                current_binary=str(current_binary),
+                cache_dir=tmp_path / ".taxo",
+            )
+
+        mode = current_binary.stat().st_mode
+        assert mode & stat.S_IXUSR  # Owner executable bit set
+
+    def test_cleans_up_temp_on_failure(self, tmp_path: Path):
+        current_binary = tmp_path / "taxo"
+        current_binary.write_text("old")
+
+        with patch("taxo.updater.httpx.Client") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client.stream.side_effect = httpx.ConnectError("fail")
+            mock_client.__enter__ = MagicMock(return_value=mock_client)
+            mock_client.__exit__ = MagicMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            with pytest.raises(httpx.ConnectError):
+                download_and_replace(
+                    url="https://example.com/taxo",
+                    current_binary=str(current_binary),
+                    cache_dir=tmp_path / ".taxo",
+                )
+
+        # Current binary should still exist unchanged
+        assert current_binary.exists()
+        assert current_binary.read_text() == "old"
