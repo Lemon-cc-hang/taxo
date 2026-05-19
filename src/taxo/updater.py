@@ -142,3 +142,45 @@ def check_latest_release() -> dict | None:
     except (KeyError, TypeError) as e:
         logger.debug("Failed to parse GitHub release: %s", e)
         return None
+
+
+def check_for_update_hint(
+    current_version: str | None = None,
+    cache: UpdateCache | None = None,
+) -> str | None:
+    """Check if an update is available, using cache when fresh.
+
+    Returns a hint string if update available, None otherwise.
+    Never raises — all errors are caught and logged.
+    """
+    current_version = current_version or get_current_version()
+    cache = cache or UpdateCache()
+
+    try:
+        if cache.is_stale():
+            release = check_latest_release()
+            if release is None:
+                return None
+            # Find matching asset for current platform
+            asset_name = get_platform_asset_name()
+            download_url = ""
+            for a in release["assets"]:
+                if a["name"] == asset_name:
+                    download_url = a["browser_download_url"]
+                    break
+            cache.save(release["latest_version"], download_url, asset_name or "")
+
+        data = cache.load()
+        if data is None:
+            return None
+
+        cmp = compare_versions(current_version, data["latest_version"])
+        if cmp == -1:
+            return (
+                f"⬆ New version available: {current_version} → {data['latest_version']}. "
+                f"Run `taxo update` to upgrade."
+            )
+        return None
+    except Exception as e:
+        logger.debug("Update hint check failed: %s", e)
+        return None

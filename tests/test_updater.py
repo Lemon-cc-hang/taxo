@@ -11,6 +11,7 @@ from taxo.updater import (
     CACHE_TTL_SECONDS,
     GITHUB_RELEASES_URL,
     UpdateCache,
+    check_for_update_hint,
     check_latest_release,
     compare_versions,
     get_current_version,
@@ -215,3 +216,46 @@ class TestCheckLatestRelease:
     def test_github_url_is_correct(self):
         assert "Lemon-cc-hang/taxo" in GITHUB_RELEASES_URL
         assert "releases/latest" in GITHUB_RELEASES_URL
+
+
+class TestCheckForUpdateHint:
+    def test_returns_none_when_up_to_date(self, tmp_path: Path):
+        cache = UpdateCache(cache_dir=tmp_path)
+        cache.save("0.2.0", "https://example.com/taxo", "taxo-macos-arm64")
+
+        result = check_for_update_hint(current_version="0.2.0", cache=cache)
+        assert result is None
+
+    def test_returns_hint_when_newer_available(self, tmp_path: Path):
+        cache = UpdateCache(cache_dir=tmp_path)
+        cache.save("0.3.0", "https://example.com/taxo", "taxo-macos-arm64")
+
+        result = check_for_update_hint(current_version="0.2.0", cache=cache)
+        assert result is not None
+        assert "0.3.0" in result
+        assert "taxo update" in result
+
+    def test_returns_none_when_cache_stale_and_api_fails(self, tmp_path: Path):
+        cache = UpdateCache(cache_dir=tmp_path)
+        # No cache file → stale
+
+        with patch("taxo.updater.check_latest_release", return_value=None):
+            result = check_for_update_hint(current_version="0.2.0", cache=cache)
+            assert result is None
+
+    def test_refreshes_cache_when_stale(self, tmp_path: Path):
+        cache = UpdateCache(cache_dir=tmp_path)
+        # No cache → stale, but API returns new version
+        api_result = {
+            "latest_version": "0.3.0",
+            "assets": [
+                {"name": "taxo-macos-arm64", "browser_download_url": "https://example.com/taxo"},
+            ],
+        }
+
+        with patch("taxo.updater.check_latest_release", return_value=api_result):
+            result = check_for_update_hint(current_version="0.2.0", cache=cache)
+            assert result is not None
+            assert "0.3.0" in result
+            # Cache should now be populated
+            assert cache.is_stale() is False
