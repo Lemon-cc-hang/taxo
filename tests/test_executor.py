@@ -179,3 +179,74 @@ class TestExecutorConcurrency:
         assert result.success == 2
         assert (dest / "a.txt").exists()
         assert (dest / "b.txt").exists()
+
+
+class TestCleanEmptyDirs:
+    def test_cleans_empty_dirs_after_move(self, tmp_path):
+        src = tmp_path / "source"
+        src.mkdir()
+        (src / "sub1").mkdir()
+        (src / "sub1" / "deep").mkdir()
+        (src / "sub1" / "deep" / "file.txt").write_text("hello")
+        dest = tmp_path / "dest"
+        dest.mkdir()
+
+        hm = HistoryManager(tmp_path / "history.jsonl")
+        executor = Executor(hm)
+        plan = make_plan(src, [
+            (str(src / "sub1" / "deep" / "file.txt"), str(dest / "file.txt"), "move"),
+        ])
+        result = executor.execute(plan, dry_run=False)
+        assert result.success == 1
+        assert result.cleaned_dirs == 2  # deep + sub1
+        assert not (src / "sub1").exists()
+
+    def test_keeps_nonempty_dirs(self, tmp_path):
+        src = tmp_path / "source"
+        src.mkdir()
+        (src / "sub").mkdir()
+        (src / "sub" / "remaining.txt").write_text("stay")
+        dest = tmp_path / "dest"
+        dest.mkdir()
+
+        hm = HistoryManager(tmp_path / "history.jsonl")
+        executor = Executor(hm)
+        plan = make_plan(src, [])
+        result = executor.execute(plan, dry_run=False)
+        assert result.cleaned_dirs == 0
+        assert (src / "sub").exists()
+
+    def test_does_not_remove_source_root(self, tmp_path):
+        src = tmp_path / "source"
+        src.mkdir()
+        (src / "file.txt").write_text("hello")
+        dest = tmp_path / "dest"
+        dest.mkdir()
+
+        hm = HistoryManager(tmp_path / "history.jsonl")
+        executor = Executor(hm)
+        plan = make_plan(src, [
+            (str(src / "file.txt"), str(dest / "file.txt"), "move"),
+        ])
+        result = executor.execute(plan, dry_run=False)
+        assert result.success == 1
+        assert result.cleaned_dirs == 0  # source_dir itself is not removed even if empty
+        assert src.exists()
+
+    def test_nested_empty_dirs_all_removed(self, tmp_path):
+        src = tmp_path / "source"
+        src.mkdir()
+        (src / "a" / "b" / "c").mkdir(parents=True)
+        (src / "a" / "b" / "c" / "file.txt").write_text("x")
+        dest = tmp_path / "dest"
+        dest.mkdir()
+
+        hm = HistoryManager(tmp_path / "history.jsonl")
+        executor = Executor(hm)
+        plan = make_plan(src, [
+            (str(src / "a" / "b" / "c" / "file.txt"), str(dest / "file.txt"), "move"),
+        ])
+        result = executor.execute(plan, dry_run=False)
+        assert result.success == 1
+        assert result.cleaned_dirs == 3  # c, b, a
+        assert not (src / "a").exists()

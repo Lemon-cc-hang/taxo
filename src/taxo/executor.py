@@ -20,6 +20,7 @@ class ExecuteResult(BaseModel):
     success: int = 0
     failed: int = 0
     skipped: int = 0
+    cleaned_dirs: int = 0
     errors: list[str] = []
 
 
@@ -92,14 +93,31 @@ class Executor:
         )
         self._history.record(entry)
 
+        # Clean up empty directories left behind in source_dir
+        cleaned = self._clean_empty_dirs(plan.source_dir)
+
         return ExecuteResult(
             plan_id=plan.id,
             total=len(plan.operations),
             success=total_success,
             failed=total_failed,
             skipped=total_skipped,
+            cleaned_dirs=cleaned,
             errors=errors,
         )
+
+    def _clean_empty_dirs(self, source_dir: Path) -> int:
+        """Remove empty subdirectories left after moving files. Bottom-up traversal."""
+        cleaned = 0
+        for dirpath in sorted(source_dir.rglob("*"), key=lambda p: -len(p.parts)):
+            if dirpath.is_dir() and not any(dirpath.iterdir()):
+                try:
+                    dirpath.rmdir()
+                    cleaned += 1
+                    logger.info(f"Removed empty directory: {dirpath}")
+                except OSError as e:
+                    logger.warning(f"Could not remove empty directory {dirpath}: {e}")
+        return cleaned
 
     def undo(self, step: int = 1) -> ExecuteResult:
         entries = self._history.list_entries(limit=step + 10)

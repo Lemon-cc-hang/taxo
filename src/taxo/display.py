@@ -72,6 +72,8 @@ def print_execute_result(console: Console, result: ExecuteResult) -> None:
         console.print(f"[red]x {result.failed} files failed[/red]")
         for err in result.errors:
             console.print(f"  [red]{err}[/red]")
+    if result.cleaned_dirs > 0:
+        console.print(f"[dim]~ {result.cleaned_dirs} empty directories removed[/dim]")
 
 
 def print_history(console: Console, entries: list[HistoryEntry]) -> None:
