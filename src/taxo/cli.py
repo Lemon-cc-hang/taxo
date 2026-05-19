@@ -1,26 +1,32 @@
 from __future__ import annotations
 
+import logging
 import sys
 import time
 from pathlib import Path
 
 import click
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TaskProgressColumn
+from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
 from taxo import __version__
 from taxo.cache import CacheManager
 from taxo.classifier import Classifier
-from taxo.config import TaxoConfig, load_config, save_config, CONFIG_DIR, CONFIG_FILE, get_default_config
+from taxo.config import (
+    CONFIG_DIR,
+    CONFIG_FILE,
+    TaxoConfig,
+    get_default_config,
+    load_config,
+    save_config,
+)
 from taxo.display import print_execute_result, print_history, print_plan_preview, print_scan_table
 from taxo.executor import Executor
 from taxo.history import HistoryManager
 from taxo.planner import Planner
 from taxo.rules import BUILTIN_RULES
 from taxo.scanner import scan_files
-from taxo.watcher import start_watcher, start_daemon, stop_daemon, get_daemon_status
-
-import logging
+from taxo.watcher import get_daemon_status, start_daemon, start_watcher, stop_daemon
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -493,6 +499,7 @@ def cost_cmd() -> None:
 def update():
     """Check for updates and upgrade Taxo to the latest version."""
     from taxo.updater import (
+        UpdateCache,
         check_latest_release,
         compare_versions,
         download_and_replace,
@@ -500,7 +507,6 @@ def update():
         get_platform_asset_name,
         is_frozen,
         pip_upgrade,
-        UpdateCache,
     )
 
     current = get_current_version()
