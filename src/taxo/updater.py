@@ -6,13 +6,18 @@ the binary (or runs pip upgrade) when an update is available.
 from __future__ import annotations
 
 import json
+import logging
 import platform as _platform
 import sys
 import time
 from pathlib import Path
 from typing import Literal
 
+import httpx
+
 from taxo import __version__
+
+logger = logging.getLogger(__name__)
 
 
 def get_current_version() -> str:
@@ -102,3 +107,38 @@ class UpdateCache:
             return (time.time() - last_check) > CACHE_TTL_SECONDS
         except (KeyError, ValueError):
             return True
+
+
+GITHUB_RELEASES_URL = "https://api.github.com/repos/Lemon-cc-hang/taxo/releases/latest"
+
+
+def check_latest_release() -> dict | None:
+    """Query GitHub Releases API for the latest version.
+
+    Returns dict with keys: latest_version, assets (list of {name, browser_download_url}).
+    Returns None on any failure (network, parse, non-200).
+    """
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(
+                GITHUB_RELEASES_URL,
+                headers={"Accept": "application/vnd.github+json"},
+            )
+            if resp.status_code != 200:
+                logger.debug("GitHub API returned %d", resp.status_code)
+                return None
+            data = resp.json()
+    except (httpx.HTTPError, OSError) as e:
+        logger.debug("GitHub API check failed: %s", e)
+        return None
+
+    try:
+        tag = data["tag_name"].lstrip("v")
+        assets = [
+            {"name": a["name"], "browser_download_url": a["browser_download_url"]}
+            for a in data.get("assets", [])
+        ]
+        return {"latest_version": tag, "assets": assets}
+    except (KeyError, TypeError) as e:
+        logger.debug("Failed to parse GitHub release: %s", e)
+        return None

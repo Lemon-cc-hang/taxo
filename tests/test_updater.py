@@ -2,13 +2,16 @@
 import json
 import time
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
+import httpx
 import pytest
 
 from taxo.updater import (
     CACHE_TTL_SECONDS,
+    GITHUB_RELEASES_URL,
     UpdateCache,
+    check_latest_release,
     compare_versions,
     get_current_version,
     get_platform_asset_name,
@@ -139,3 +142,76 @@ class TestUpdateCache:
 
     def test_cache_ttl_is_24_hours(self):
         assert CACHE_TTL_SECONDS == 86400
+
+
+class TestCheckLatestRelease:
+    def test_returns_version_and_url(self):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "tag_name": "v0.3.0",
+            "assets": [
+                {"name": "taxo-macos-arm64", "browser_download_url": "https://github.com/example/taxo-macos-arm64"},
+                {"name": "taxo-linux-x86_64", "browser_download_url": "https://github.com/example/taxo-linux-x86_64"},
+            ],
+        }
+
+        with patch("taxo.updater.httpx.Client") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client.get.return_value = mock_response
+            mock_client.__enter__ = MagicMock(return_value=mock_client)
+            mock_client.__exit__ = MagicMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            result = check_latest_release()
+            assert result is not None
+            assert result["latest_version"] == "0.3.0"
+            assert len(result["assets"]) == 2
+
+    def test_returns_none_on_http_error(self):
+        with patch("taxo.updater.httpx.Client") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client.get.side_effect = httpx.ConnectError("no network")
+            mock_client.__enter__ = MagicMock(return_value=mock_client)
+            mock_client.__exit__ = MagicMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            result = check_latest_release()
+            assert result is None
+
+    def test_returns_none_on_non_200(self):
+        mock_response = MagicMock()
+        mock_response.status_code = 403
+        mock_response.json.return_value = {}
+
+        with patch("taxo.updater.httpx.Client") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client.get.return_value = mock_response
+            mock_client.__enter__ = MagicMock(return_value=mock_client)
+            mock_client.__exit__ = MagicMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            result = check_latest_release()
+            assert result is None
+
+    def test_strips_v_prefix_from_tag(self):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "tag_name": "v0.4.0",
+            "assets": [],
+        }
+
+        with patch("taxo.updater.httpx.Client") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client.get.return_value = mock_response
+            mock_client.__enter__ = MagicMock(return_value=mock_client)
+            mock_client.__exit__ = MagicMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            result = check_latest_release()
+            assert result["latest_version"] == "0.4.0"
+
+    def test_github_url_is_correct(self):
+        assert "Lemon-cc-hang/taxo" in GITHUB_RELEASES_URL
+        assert "releases/latest" in GITHUB_RELEASES_URL
