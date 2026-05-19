@@ -252,7 +252,7 @@ def download_and_replace(
             os.rename(tmp_path, current_binary)
 
         logger.info("Updated binary: %s", current_binary)
-    except Exception:
+    except (httpx.HTTPError, OSError, RuntimeError):
         # Clean up temp file on any failure
         if tmp_path.exists():
             tmp_path.unlink()
