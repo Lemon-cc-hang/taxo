@@ -18,9 +18,21 @@ from typing import Literal
 
 import httpx
 
+from pydantic import BaseModel
+
 from taxo import __version__
 
 logger = logging.getLogger(__name__)
+
+
+class UpdateInfo(BaseModel):
+    """Information about an available update."""
+
+    current_version: str
+    latest_version: str
+    download_url: str | None = None
+    is_frozen: bool
+    asset_name: str | None = None
 
 
 def get_current_version() -> str:
@@ -219,10 +231,25 @@ def download_and_replace(
                         f.write(chunk)
 
         # Set executable permission before rename
-        os.chmod(tmp_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP)
+        os.chmod(tmp_path, 0o755)
 
-        # Atomic replace (POSIX)
-        os.rename(tmp_path, current_binary)
+        # Atomic replace
+        if sys.platform == "win32":
+            # Windows: rename old to .old, rename new in, delete .old
+            old_path = current_binary + ".old"
+            try:
+                os.remove(old_path)
+            except OSError:
+                pass
+            os.rename(current_binary, old_path)
+            os.rename(tmp_path, current_binary)
+            try:
+                os.remove(old_path)
+            except OSError:
+                pass
+        else:
+            # POSIX: atomic rename
+            os.rename(tmp_path, current_binary)
 
         logger.info("Updated binary: %s", current_binary)
     except Exception:
