@@ -1,6 +1,7 @@
 """Tests for taxo.updater — auto-update system."""
 import json
 import stat
+import subprocess
 import time
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -19,6 +20,7 @@ from taxo.updater import (
     get_current_version,
     get_platform_asset_name,
     is_frozen,
+    pip_upgrade,
     PLATFORM_MAP,
 )
 
@@ -346,3 +348,37 @@ class TestDownloadAndReplace:
         # Current binary should still exist unchanged
         assert current_binary.exists()
         assert current_binary.read_text() == "old"
+
+
+class TestPipUpgrade:
+    def test_calls_pip_install_upgrade(self):
+        with patch("taxo.updater.subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=["pip", "install", "--upgrade", "taxo"],
+                returncode=0,
+                stdout="Successfully installed taxo-0.3.0",
+            )
+            result = pip_upgrade()
+            assert result is True
+            mock_run.assert_called_once()
+            call_args = mock_run.call_args[0][0]
+            assert "pip" in " ".join(call_args)
+            assert "install" in " ".join(call_args)
+            assert "--upgrade" in " ".join(call_args)
+            assert "taxo" in " ".join(call_args)
+
+    def test_returns_false_on_failure(self):
+        with patch("taxo.updater.subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=["pip", "install", "--upgrade", "taxo"],
+                returncode=1,
+                stdout="",
+                stderr="ERROR: Could not find a version",
+            )
+            result = pip_upgrade()
+            assert result is False
+
+    def test_returns_false_on_exception(self):
+        with patch("taxo.updater.subprocess.run", side_effect=FileNotFoundError("no pip")):
+            result = pip_upgrade()
+            assert result is False

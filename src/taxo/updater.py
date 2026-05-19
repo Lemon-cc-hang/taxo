@@ -10,6 +10,7 @@ import logging
 import os
 import platform as _platform
 import stat
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -236,3 +237,22 @@ def download_and_replace(
                 tmp_dir.rmdir()
             except OSError:
                 pass  # Directory not empty or other issue, leave it
+
+
+def pip_upgrade() -> bool:
+    """Upgrade taxo via pip. Returns True on success, False on failure."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--upgrade", "taxo"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode == 0:
+            logger.info("Pip upgrade succeeded: %s", result.stdout.strip())
+            return True
+        logger.warning("Pip upgrade failed: %s", result.stderr.strip())
+        return False
+    except (subprocess.SubprocessError, OSError) as e:
+        logger.warning("Pip upgrade error: %s", e)
+        return False
