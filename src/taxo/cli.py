@@ -49,7 +49,14 @@ def _get_history_manager(config: TaxoConfig | None = None) -> HistoryManager:
 @click.version_option(version=__version__, prog_name="Taxo")
 def cli() -> None:
     """Taxo - AI-powered file classifier."""
-    pass
+    # Passive update check — non-blocking hint
+    try:
+        from taxo.updater import check_for_update_hint
+        hint = check_for_update_hint()
+        if hint:
+            console.print(f"[yellow]{hint}[/yellow]")
+    except Exception:
+        pass  # Never block normal operation
 
 
 @cli.command()
