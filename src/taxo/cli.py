@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 
@@ -479,6 +480,88 @@ def cost_cmd() -> None:
     console.print(f"  Output tokens:     {stats['total_output_tokens']:,}")
     console.print(f"  Max cost/call:     ${stats['max_cost_per_call']:.6f}")
     console.print(f"  Over-budget action: {stats['over_budget_action']}")
+
+
+@cli.command()
+def update():
+    """Check for updates and upgrade Taxo to the latest version."""
+    from taxo.updater import (
+        check_latest_release,
+        compare_versions,
+        download_and_replace,
+        get_current_version,
+        get_platform_asset_name,
+        is_frozen,
+        pip_upgrade,
+        UpdateCache,
+    )
+
+    current = get_current_version()
+    console.print(f"Current version: [bold]{current}[/bold]")
+
+    console.print("Checking for updates...")
+    release = check_latest_release()
+    if release is None:
+        console.print("[red]Failed to check for updates. Network may be unavailable.[/red]")
+        raise SystemExit(1)
+
+    latest = release["latest_version"]
+    console.print(f"Latest version:  [bold]{latest}[/bold]")
+
+    cmp = compare_versions(current, latest)
+    if cmp >= 0:
+        console.print(f"[green]Already up to date (v{latest}).[/green]")
+        return
+
+    console.print(f"\n[bold yellow]Update available![/bold yellow] {current} → {latest}")
+
+    if is_frozen():
+        # Binary update path
+        asset_name = get_platform_asset_name()
+        if asset_name is None:
+            console.print(
+                "[red]Auto-update not available for this platform.[/red]\n"
+                "Please download manually from "
+                "https://github.com/Lemon-cc-hang/taxo/releases"
+            )
+            raise SystemExit(1)
+
+        download_url = ""
+        for a in release["assets"]:
+            if a["name"] == asset_name:
+                download_url = a["browser_download_url"]
+                break
+
+        if not download_url:
+            console.print(f"[red]Could not find asset '{asset_name}' in release.[/red]")
+            raise SystemExit(1)
+
+        console.print(f"Downloading [bold]{asset_name}[/bold]...")
+        try:
+            download_and_replace(
+                url=download_url,
+                current_binary=sys.executable,
+            )
+            console.print("[green]Updated successfully![/green]")
+        except Exception as e:
+            console.print(f"[red]Update failed: {e}[/red]")
+            console.print(
+                "Try running with [bold]sudo[/bold] or download manually from "
+                "https://github.com/Lemon-cc-hang/taxo/releases"
+            )
+            raise SystemExit(1)
+    else:
+        # Pip update path
+        console.print("Upgrading via pip...")
+        if pip_upgrade():
+            console.print("[green]Updated successfully![/green]")
+        else:
+            console.print("[red]Pip upgrade failed.[/red] Try: [bold]pip install --upgrade taxo[/bold]")
+            raise SystemExit(1)
+
+    # Update cache
+    cache = UpdateCache()
+    cache.save(latest, "", asset_name if is_frozen() else "")
 
 
 @cli.group()
